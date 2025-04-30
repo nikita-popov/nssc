@@ -203,8 +203,10 @@ Probably
 ## Why this project?
 
 If you need:
+
 - more protocols support
-- heterogeneous systems
+- heterogeneous systems support
+
 `nssc` is perfect for you.
 
 If you need only web-based cloud - it's better to use `slcl`.
