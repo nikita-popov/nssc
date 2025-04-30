@@ -21,16 +21,20 @@ type UserFS struct {
 	mu     sync.RWMutex
 	tree   fs.FS
 	quota  *Quota
-	server *UserFSServer
+	server *UserFSServer // TODO: Re-think
 }
 
-func newUserFS(root string, quota *Quota, server *UserFSServer) *UserFS {
+func NewUserFS(root string, quota *Quota, server *UserFSServer) *UserFS {
 	return &UserFS{
 		root:   root,
 		tree:   os.DirFS(root),
 		quota:  quota,
 		server: server,
 	}
+}
+
+func (u *UserFS) Root() string {
+	return u.root
 }
 
 func (u *UserFS) resolvePath(name string) (string, error) {

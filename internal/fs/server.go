@@ -51,9 +51,9 @@ func NewUserFSServer(root string, commonQuota *Quota, users []users.User) (*User
 			quota = 0
 		}
 
-		server.users[user.Name] = newUserFS(
+		server.users[user.Name] = NewUserFS(
 			userRoot,
-			NewQuota(int64(quota), used),
+			NewQuota(int64(quota)),
 			server,
 		)
 	}

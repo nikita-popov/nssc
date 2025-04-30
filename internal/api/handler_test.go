@@ -14,9 +14,8 @@ import (
 func TestAPIHandler(t *testing.T) {
 	db := &users.UsersDB{}
 	db.AddUser("user", "pass", "1GiB")
-	users, _ := db.GetUsers()
-	mainQuota := fs.NewQuota(0, 0)
-	ufss, _ := fs.NewUserFSServer("/tmp/users", mainQuota, users)
+	mainQuota := fs.NewQuota(0)
+	ufss, _ := fs.NewUserFSServer("/tmp/users", mainQuota, db.Users)
 	handler := api.NewHandler(db, "/tmp", ufss)
 
 	t.Run("File upload", func(t *testing.T) {

@@ -76,7 +76,7 @@ func main() {
 			log.Fatalf("Failed to create public dir: %v", err)
 		}
 
-		mainQuota := fs.NewQuota(0, 0)
+		mainQuota := fs.NewQuota(0)
 		ufss, _ = fs.NewUserFSServer(filepath.Join(rootDir, "user"), mainQuota, db.Users)
 
 		/*go func() {

@@ -12,18 +12,30 @@ type Quota struct {
 	mu     sync.Mutex
 }
 
-// Creates a new quota object
-func NewQuota(total, used int64) *Quota {
-	q := &Quota{
-		total: total,
-		used:  used,
+// Creates a new quota
+func NewQuota(total int64) *Quota {
+	return &Quota{
+		total:  total,
+		used:   0,
+		remain: total,
 	}
-	q.calculateRemain()
-	return q
+}
+
+// Return remain quota
+func (q *Quota) Remain() int64 {
+	return q.remain
+}
+
+// Return remain quota
+func (q *Quota) Used() int64 {
+	return q.used
 }
 
 // Calculate remain quota
 func (q *Quota) calculateRemain() {
+	if q.total == 0 {
+		return
+	}
 	q.remain = q.total - q.used
 	if q.remain < 0 {
 		q.remain = 0
@@ -45,6 +57,10 @@ func (q *Quota) SetTotal(total int64) {
 func (q *Quota) SetUsed(used int64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if q.total == 0 {
+		q.used = used
+		return
+	}
 	if used > q.total {
 		used = q.total
 	}
@@ -56,6 +72,9 @@ func (q *Quota) AddUsage(delta int64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.used += delta
+	if q.total == 0 {
+		return
+	}
 	if q.used > q.total {
 		q.used = q.total
 	}
