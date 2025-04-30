@@ -52,7 +52,7 @@ func main() {
 	case "run":
 		var (
 			//styxServer styx.Server
-			ufss         *fs.UserFSServer
+			ufss *fs.UserFSServer
 		)
 		if len(os.Args) != 4 {
 			log.Fatal("Usage: run <host> <rootDir>")

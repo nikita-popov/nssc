@@ -305,7 +305,7 @@ func (h *FrontendHandler) handleMkdir(w http.ResponseWriter, r *http.Request, us
 	curPath := r.FormValue("path")
 	dirname := r.FormValue("dirname")
 	if dirname == "" {
-		log.Printf("Malformed form: Directory name required", )
+		log.Printf("Malformed form: Directory name required")
 		http.Error(w, "Directory name required", http.StatusBadRequest)
 		return
 	}

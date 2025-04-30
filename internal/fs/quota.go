@@ -52,7 +52,6 @@ func (q *Quota) SetUsed(used int64) {
 	q.calculateRemain()
 }
 
-//
 func (q *Quota) AddUsage(delta int64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()

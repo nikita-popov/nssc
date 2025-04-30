@@ -16,7 +16,6 @@ import (
 	"nssc/internal/users"
 )
 
-//
 type APIHandler struct {
 	db       *users.UsersDB
 	rootDir  string // TODO: remove
@@ -24,7 +23,6 @@ type APIHandler struct {
 	fs       *fs.UserFSServer
 }
 
-//
 func NewHandler(db *users.UsersDB, rootDir string, fs *fs.UserFSServer) *APIHandler {
 	shareMgr := share.NewShareManager(filepath.Join(rootDir, "public"))
 	return &APIHandler{
@@ -35,7 +33,6 @@ func NewHandler(db *users.UsersDB, rootDir string, fs *fs.UserFSServer) *APIHand
 	}
 }
 
-//
 func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fullPath := strings.TrimPrefix(r.URL.Path, "/api/")
 	parts := strings.SplitN(fullPath, "/", 2)
@@ -80,7 +77,6 @@ func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-//
 func (h *APIHandler) handleGet(w http.ResponseWriter, r *http.Request, absPath string, ufs *fs.UserFS) {
 	info, err := os.Stat(absPath)
 	if err != nil {
@@ -96,7 +92,6 @@ func (h *APIHandler) handleGet(w http.ResponseWriter, r *http.Request, absPath s
 	http.ServeFile(w, r, absPath)
 }
 
-//
 func (h *APIHandler) listDirectory(w http.ResponseWriter, path string, ufs *fs.UserFS) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
@@ -120,7 +115,6 @@ func (h *APIHandler) listDirectory(w http.ResponseWriter, path string, ufs *fs.U
 	json.NewEncoder(w).Encode(response)
 }
 
-//
 func (h *APIHandler) handlePost(w http.ResponseWriter, r *http.Request, path string, ufs *fs.UserFS) {
 	if r.URL.Query().Get("mkdir") != "" {
 		h.createDirectory(w, path, ufs)
@@ -135,7 +129,6 @@ func (h *APIHandler) handlePost(w http.ResponseWriter, r *http.Request, path str
 	sendJSONError(w, "Invalid operation", http.StatusBadRequest)
 }
 
-//
 func (h *APIHandler) createDirectory(w http.ResponseWriter, path string, ufs *fs.UserFS) {
 	if err := os.MkdirAll(path, 0750); err != nil {
 		sendJSONError(w, "Directory creation failed", http.StatusInternalServerError)
@@ -144,12 +137,11 @@ func (h *APIHandler) createDirectory(w http.ResponseWriter, path string, ufs *fs
 
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{
-		"status":  "created",
-		"path":    path,
+		"status": "created",
+		"path":   path,
 	})
 }
 
-//
 func (h *APIHandler) handlePut(w http.ResponseWriter, r *http.Request, path string, ufs *fs.UserFS) {
 	defer r.Body.Close()
 
@@ -172,12 +164,11 @@ func (h *APIHandler) handlePut(w http.ResponseWriter, r *http.Request, path stri
 
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{
-		"status":  "uploaded",
-		"path":    path,
+		"status": "uploaded",
+		"path":   path,
 	})
 }
 
-//
 func (h *APIHandler) handleDelete(w http.ResponseWriter, r *http.Request, path string, ufs *fs.UserFS) {
 	if err := os.RemoveAll(path); err != nil {
 		sendJSONError(w, "Deletion failed", http.StatusInternalServerError)
@@ -187,7 +178,6 @@ func (h *APIHandler) handleDelete(w http.ResponseWriter, r *http.Request, path s
 	w.WriteHeader(http.StatusNoContent)
 }
 
-//
 func (h *APIHandler) createShare(w http.ResponseWriter, path string) {
 	linkID, err := h.shareMgr.CreateShare(path)
 	if err != nil {
@@ -200,7 +190,6 @@ func (h *APIHandler) createShare(w http.ResponseWriter, path string) {
 	})
 }
 
-//
 func sendJSONError(w http.ResponseWriter, message string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -212,7 +201,6 @@ func sendJSONError(w http.ResponseWriter, message string, code int) {
 	})
 }
 
-//
 func getMimeType(info os.FileInfo) string {
 	if info.IsDir() {
 		return "inode/directory"

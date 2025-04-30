@@ -2,8 +2,8 @@ package users
 
 import (
 	"crypto/rand"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io/ioutil"
 	"log"
@@ -24,8 +24,8 @@ type User struct {
 }
 
 type UsersDB struct {
-	Users []User     `json:"users"`
-	Root  string     `json:"-"`
+	Users []User `json:"users"`
+	Root  string `json:"-"`
 	mu    sync.Mutex
 }
 
@@ -185,20 +185,20 @@ func (db *UsersDB) GetUsers() ([]string, error) {
 }
 
 func (u *User) GenerateJWT() (string, error) {
-    claims := jwt.MapClaims{
-        "sub": u.Name,
-        "exp": time.Now().Add(24 * time.Hour).Unix(),
-    }
+	claims := jwt.MapClaims{
+		"sub": u.Name,
+		"exp": time.Now().Add(24 * time.Hour).Unix(),
+	}
 
-    token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-    return token.SignedString([]byte(u.Key))
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(u.Key))
 }
 
-func (u *User)ValidateJWT(tokenString string) (*jwt.Token, error) {
-    return jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-        if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-            return nil, jwt.ErrSignatureInvalid
-        }
-        return []byte(u.Key), nil
-    })
+func (u *User) ValidateJWT(tokenString string) (*jwt.Token, error) {
+	return jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, jwt.ErrSignatureInvalid
+		}
+		return []byte(u.Key), nil
+	})
 }

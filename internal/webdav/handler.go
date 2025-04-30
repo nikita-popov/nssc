@@ -10,7 +10,6 @@ import (
 	"nssc/internal/users"
 )
 
-//
 type WebDAVHandler struct {
 	db         *users.UsersDB
 	rootDir    string
@@ -19,7 +18,6 @@ type WebDAVHandler struct {
 	fs         *fs.UserFSServer
 }
 
-//
 func NewHandler(db *users.UsersDB, rootDir string, fs *fs.UserFSServer) http.Handler {
 	return &WebDAVHandler{
 		db:         db,
@@ -30,7 +28,6 @@ func NewHandler(db *users.UsersDB, rootDir string, fs *fs.UserFSServer) http.Han
 	}
 }
 
-//
 func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/webdav/")
 	parts := strings.SplitN(path, "/", 2)

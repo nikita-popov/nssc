@@ -1,9 +1,9 @@
 package users_test
 
 import (
+	"nssc/internal/users"
 	"os"
 	"testing"
-	"nssc/internal/users"
 )
 
 func TestUserManagement(t *testing.T) {

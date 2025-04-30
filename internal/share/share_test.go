@@ -1,10 +1,10 @@
 package share_test
 
 import (
+	"nssc/internal/share"
 	"os"
 	"path/filepath"
 	"testing"
-	"nssc/internal/share"
 )
 
 func TestShareManager(t *testing.T) {

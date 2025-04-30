@@ -1,42 +1,42 @@
 package ninep
 
 import (
-    "context"
+	"context"
 	"errors"
-    "log"
-    "net"
-    //"os"
+	"log"
+	"net"
+	//"os"
 	"path"
-    //"path/filepath"
-    //"strings"
-    "sync"
+	//"path/filepath"
+	//"strings"
+	"sync"
 
-    "aqwari.net/net/styx"
-    //"aqwari.net/net/styx/styxauth"
-    "nssc/internal/users"
+	"aqwari.net/net/styx"
+	//"aqwari.net/net/styx/styxauth"
+	"nssc/internal/users"
 )
 
 type UserFS struct {
-    userRoot string
-    quota    int64
-    mu       sync.Mutex
+	userRoot string
+	quota    int64
+	mu       sync.Mutex
 }
 
 type Server struct {
-    listener net.Listener
-    usersDB  *users.UsersDB
-    rootDir  string
-    //fsCache  *sync.Map // map[string]*UserFS
-	fs       map[string]*UserFS
-	ctx      context.Context
+	listener net.Listener
+	usersDB  *users.UsersDB
+	rootDir  string
+	//fsCache  *sync.Map // map[string]*UserFS
+	fs  map[string]*UserFS
+	ctx context.Context
 }
 
 func NewServer(usersDB *users.UsersDB, rootDir string) *Server {
-    return &Server{
-        usersDB: usersDB,
-        rootDir: rootDir,
-        //fsCache: &sync.Map{},
-    }
+	return &Server{
+		usersDB: usersDB,
+		rootDir: rootDir,
+		//fsCache: &sync.Map{},
+	}
 }
 
 /*func (s *Server) Start(addr string) error {
