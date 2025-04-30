@@ -2,30 +2,30 @@ package users
 
 import (
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
+	"encoding/hex"
 	"errors"
 	"io/ioutil"
 	"log"
 	"os"
-	"path/filepath"
 	"sync"
+	"time"
 
-	"github.com/dustin/go-humanize"
+	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type User struct {
 	Name     string `json:"name"`
-	Password string `json:"password"` // bcrypt hashed password with salt
-	Salt     string `json:"salt"`     // random salt, base64 encoded
-	Key      string `json:"key"`      // random key for JWT signing, base64 encoded
+	Password string `json:"password"` // bcrypt hashed password + salt
+	Salt     string `json:"salt"`     // random salt
+	Key      string `json:"key"`      // random key for JWT signing
 	Quota    string `json:"quota"`    // quota string like "1GiB"
 }
 
 type UsersDB struct {
-	Users []User `json:"users"`
-	Root  string
+	Users []User     `json:"users"`
+	Root  string     `json:"-"`
 	mu    sync.Mutex
 }
 
@@ -85,7 +85,7 @@ func generateKey() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return base64.StdEncoding.EncodeToString(keyBytes), nil
+	return hex.EncodeToString(keyBytes), nil
 }
 
 func (db *UsersDB) AddUser(name, password, quota string) error {
@@ -99,12 +99,12 @@ func (db *UsersDB) AddUser(name, password, quota string) error {
 		}
 	}
 
-	saltBytes, err := generateRandomBytes(16)
+	saltBytes, err := generateRandomBytes(32)
 	if err != nil {
 		log.Printf("[AddUser] Failed to generate salt: %v", err)
 		return err
 	}
-	salt := base64.StdEncoding.EncodeToString(saltBytes)
+	salt := hex.EncodeToString(saltBytes)
 
 	hashedPassword, err := hashPassword(password, salt)
 	if err != nil {
@@ -175,37 +175,6 @@ func (db *UsersDB) GetUserKey(name string) (string, error) {
 	return "", errors.New("user not found")
 }
 
-func (db *UsersDB) GetQuota(username string) (used uint64, total uint64, err error) {
-	var (
-		user  User
-		found bool = false
-	)
-	for _, user = range db.Users {
-		if user.Name == username {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return 0, 0, errors.New("user not found")
-	}
-
-	total, err = humanize.ParseBytes(user.Quota)
-	if err != nil {
-		return 0, 0, err
-	}
-
-	userDir := filepath.Join(db.Root, "users", username)
-	err = filepath.Walk(userDir, func(path string, info os.FileInfo, err error) error {
-		if !info.IsDir() {
-			used += uint64(info.Size())
-		}
-		return nil
-	})
-
-	return used, total, err
-}
-
 func (db *UsersDB) GetUsers() ([]string, error) {
 	var res []string
 
@@ -213,4 +182,23 @@ func (db *UsersDB) GetUsers() ([]string, error) {
 		res = append(res, user.Name)
 	}
 	return res, nil
+}
+
+func (u *User) GenerateJWT() (string, error) {
+    claims := jwt.MapClaims{
+        "sub": u.Name,
+        "exp": time.Now().Add(24 * time.Hour).Unix(),
+    }
+
+    token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+    return token.SignedString([]byte(u.Key))
+}
+
+func (u *User)ValidateJWT(tokenString string) (*jwt.Token, error) {
+    return jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+        if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+            return nil, jwt.ErrSignatureInvalid
+        }
+        return []byte(u.Key), nil
+    })
 }

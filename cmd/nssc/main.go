@@ -67,7 +67,7 @@ func main() {
 		}
 		log.Printf("Users loaded: %d", len(db.Users))
 		db.SetRoot(rootDir)
-		err := os.MkdirAll(filepath.Join(rootDir, "users"), 0755)
+		err := os.MkdirAll(filepath.Join(rootDir, "user"), 0755)
 		if err != nil {
 			log.Fatalf("Failed to create users dir: %v", err)
 		}
@@ -75,10 +75,9 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to create public dir: %v", err)
 		}
-		users, _ := db.GetUsers()
 
 		mainQuota := fs.NewQuota(0, 0)
-		ufss, _ = fs.NewUserFSServer(filepath.Join(rootDir,"users"), mainQuota, users)
+		ufss, _ = fs.NewUserFSServer(filepath.Join(rootDir, "user"), mainQuota, db.Users)
 
 		/*go func() {
 			srv := ninep.NewServer(&db, rootDir)

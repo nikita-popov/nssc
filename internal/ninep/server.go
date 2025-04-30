@@ -51,7 +51,7 @@ func NewServer(usersDB *users.UsersDB, rootDir string) *Server {
 		Handler: styx.HandlerFunc(func(session *styx.Session) {
 			user := session.User()
 			fs, _ := s.fsCache.LoadOrStore(user, &UserFS{
-				userRoot: filepath.Join(s.rootDir, "users", user),
+				userRoot: filepath.Join(s.rootDir, "user", user),
 				quota:    s.usersDB.GetQuota(user),
 			})
 			fs.(*UserFS).Serve9P(session)

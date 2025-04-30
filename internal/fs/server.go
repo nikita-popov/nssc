@@ -6,6 +6,10 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+
+	"github.com/dustin/go-humanize"
+
+	"nssc/internal/users"
 )
 
 // Hold all UserFS's
@@ -17,7 +21,7 @@ type UserFSServer struct {
 }
 
 // Create new UserFSServer
-func NewUserFSServer(root string, commonQuota *Quota, users []string) (*UserFSServer, error) {
+func NewUserFSServer(root string, commonQuota *Quota, users []users.User) (*UserFSServer, error) {
     if err := os.MkdirAll(root, 0755); err != nil {
         return nil, fmt.Errorf("failed to create root directory: %w", err)
     }
@@ -28,8 +32,8 @@ func NewUserFSServer(root string, commonQuota *Quota, users []string) (*UserFSSe
         users:       make(map[string]*UserFS),
     }
 
-    for _, username := range users {
-        userRoot := filepath.Join(root, username)
+    for _, user := range users {
+        userRoot := filepath.Join(root, user.Name)
         if err := os.MkdirAll(userRoot, 0755); err != nil {
             return nil, fmt.Errorf("failed to create user directory: %w", err)
         }
@@ -42,9 +46,14 @@ func NewUserFSServer(root string, commonQuota *Quota, users []string) (*UserFSSe
             return nil
         })
 
-        server.users[username] = newUserFS(
+		quota, err := humanize.ParseBytes(user.Quota)
+		if err != nil {
+			quota = 0
+		}
+
+        server.users[user.Name] = newUserFS(
             userRoot,
-            NewQuota(0, used),
+            NewQuota(int64(quota), used),
             server,
         )
     }

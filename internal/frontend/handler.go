@@ -17,132 +17,6 @@ import (
 	"nssc/internal/users"
 )
 
-var tpl = template.Must(template.New("index").Parse(`
-<!DOCTYPE html>
-<html lang="en">
-<head>
-	<meta charset="UTF-8" />
-	<title>nssc - {{ .CurrentPath }}</title>
-	<style>
-        body { margin: 0 auto; font-family: 'Courier New', Courier, monospace; }
-        td { font-size: 14px; }
-        a { text-decoration: none; }
-        .userform { padding: 4px; }
-        .loginform { display: grid; }
-        form, label, table { margin: auto; }
-        div { align-items: center; display: grid; }
-        input, .abutton { margin: auto; border: 1px solid; border-radius: 8px; }
-        header, footer, .fds { display: flex; justify-content: center; text-decoration: auto; }
-        table { max-width: 50%; }
-        tr:nth-child(even) { background-color: lightgray; }
-        .page { margin: 0.2rem; }
-        .pages { display: flex; }
-	</style>
-</head>
-<body>
-
-<div>
-<table>
-  <tbody>
-    {{ if .ParentPath }}
-    <tr>
-      <td></td>
-      <td><a href="/{{ .User }}{{ .ParentPath }}">..</a></td>
-      <td></td>
-      <td></td>
-      <td></td>
-      <td></td>
-    </tr>
-    {{ end }}
-    {{ range .Files }}
-    <tr>
-      <td><input type="checkbox" form="rm" name="path" value="{{ .RelPath }}"></td>
-      <td>
-          {{ if .IsDir }}
-          <a href="/{{ $.User }}{{ .RelPath }}/">{{ .Name }}</a>
-          {{ else }}
-          <a href="/{{ $.User }}{{ .RelPath }}">{{ .Name }}</a>
-          {{ end }}
-      </td>
-      <td>
-          {{ if not .IsDir }}
-          {{ .Size }}
-          {{ end }}
-      </td>
-      <td>{{ .ModTime }}</td>
-      <td>
-        {{ if not .IsDir }}
-          <form method="post" action="/share">
-              <input type="hidden" name="name" value="/{{ $.User }}{{ .RelPath }}">
-              <input type="submit" value="Share">
-          </form>
-        {{ end }}
-      </td>
-      <td>{{ if not .IsDir }}<a href="/{{ $.User }}{{ .RelPath }}?preview=1">Preview</a>{{ end }}</td>
-    </tr>
-    {{ end }}
-  </tbody>
-</table>
-</div>
-
-<div class="userform">
-<form action="/search" method="get">
-  <input type="text" name="q" placeholder="Search term" value="{{ .SearchQuery }}">
-  <input type="submit" value="Search">
-</form>
-</div>
-
-<div class="userform">
-<form action="/upload" method="post" enctype="multipart/form-data">
-  <input type="hidden" name="path" value="{{ .CurrentPath }}">
-  <input type="file" name="file" required>
-  <input type="submit" value="Upload">
-</form>
-</div>
-
-<div class="userform">
-<form action="/mkdir" method="post">
-  <input type="hidden" name="path" value="{{ .CurrentPath }}">
-  <input type="text" name="dirname" placeholder="Directory name" required>
-  <input type="submit" value="Create">
-</form>
-</div>
-
-<div class="userform">
-<form id="rm" method="post" action="/rm">
-    <input type="hidden" name="dir" value="{{ .CurrentPath }}">
-    <input type="submit" value="Remove selected files">
-</form>
-</div>
-
-{{ if .QuotaTotal }}
-<div class="userform">
-  <label>
-    User quota:
-    <progress value="{{ .QuotaUsed }}" max="{{ .QuotaTotal }}">{{ .QuotaUsedStr }} / {{ .QuotaTotalStr }}</progress>
-    {{ .QuotaUsedStr }} / {{ .QuotaTotalStr }}
-  </label>
-</div>
-{{ end }}
-
-<div class="userform">
-<form method="post" action="/logout">
-  <input type="submit" value="Logout">
-</form>
-</div>
-
-<div class="userform">
-<span class="fds">{{ .DirsCount }} directories, {{ .FilesCount }} files</span>
-</div>
-
-<footer>
-nssc
-<footer>
-
-</body>
-</html>
-`))
-
 type FrontendHandler struct {
 	ctx      context.Context
 	db       *users.UsersDB
@@ -157,8 +31,40 @@ func NewHandler(db *users.UsersDB, rootDir string, fs *fs.UserFSServer) *Fronten
 	return &FrontendHandler{db: db, rootDir: rootDir, shareMgr: shareMgr, template: tpl, fs: fs}
 }
 
+func (h *FrontendHandler) GetUserFromCookie(r *http.Request) *users.User {
+	var user *users.User
+	for key, _ := range h.db.Users {
+		cookie, err := r.Cookie(h.db.Users[key].Name)
+		if err != nil {
+			continue
+		}
+		user = &h.db.Users[key]
+		token, err := user.ValidateJWT(cookie.Value)
+		if err != nil || !token.Valid {
+			continue
+		}
+		break
+	}
+
+	return user
+}
+
 func (h *FrontendHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// TODO: cookie
+	cookies := r.Cookies()
+	if cookies != nil {
+		user := h.GetUserFromCookie(r)
+		if user != nil {
+			ufs, err := h.fs.GetUserFS(user.Name)
+			if err != nil {
+				log.Printf("User FS error: %v", err)
+				http.Error(w, "Internal server error", http.StatusInternalServerError)
+				return
+			}
+			h.handleAuthorizedRequest(w, r, user.Name, ufs)
+			return
+		}
+	}
+
 	username, pass, ok := r.BasicAuth()
 	if !ok || !h.db.Authenticate(username, pass) {
 		w.Header().Set("WWW-Authenticate", `Basic realm="CloudStorage"`)
@@ -169,11 +75,34 @@ func (h *FrontendHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	user := h.db.GetUser(username)
 	ufs, err := h.fs.GetUserFS(user.Name)
 	if err != nil {
-		// TODO
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		log.Printf("User FS error: %s", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
+	token, err := user.GenerateJWT()
+	if err != nil {
+		log.Printf("User JWT error: %s", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     user.Name,
+		Value:    token,
+		Path:     "/",
+		MaxAge:   86400,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+	})
+
+	log.Printf("User %s logged in", username)
+
+	h.handleAuthorizedRequest(w, r, username, ufs)
+}
+
+func (h *FrontendHandler) handleAuthorizedRequest(w http.ResponseWriter, r *http.Request, username string, ufs *fs.UserFS) {
 	if r.Method == http.MethodPost {
 		switch r.URL.Path {
 		case "/upload":
@@ -208,7 +137,7 @@ func (h *FrontendHandler) rootHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	http.Redirect(w, r, "/"+username, http.StatusSeeOther)
+	http.Redirect(w, r, "/"+username+"/", http.StatusSeeOther)
 }
 
 func (h *FrontendHandler) userHandler(w http.ResponseWriter, r *http.Request, user string, ufs *fs.UserFS) {
@@ -298,7 +227,7 @@ func (h *FrontendHandler) userHandler(w http.ResponseWriter, r *http.Request, us
 
 	searchQuery := ""
 
-	quotaUsed, quotaTotal, _ := ufs.GetQuota()
+	quotaTotal, quotaUsed, _ := ufs.GetQuota()
 	quotaTotalStr := humanize.IBytes(uint64(quotaTotal))
 	quotaUsedStr := humanize.IBytes(uint64(quotaUsed))
 
@@ -329,7 +258,7 @@ func (h *FrontendHandler) userHandler(w http.ResponseWriter, r *http.Request, us
 	}
 
 	if err := h.template.Execute(w, data); err != nil {
-		log.Println("Template execute error:", err)
+		log.Printf("Template execute error: %v", err)
 	}
 }
 
@@ -420,14 +349,22 @@ func (h *FrontendHandler) handleDelete(w http.ResponseWriter, r *http.Request, u
 }
 
 func (h *FrontendHandler) handleLogout(w http.ResponseWriter, r *http.Request, username string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     username,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+	})
 	w.Header().Set("WWW-Authenticate", `Basic realm="CloudStorage"`)
-	http.Error(w, "Logged out", http.StatusUnauthorized)
 	log.Printf("User %s logged out", username)
+	http.Redirect(w, r, "/", http.StatusUnauthorized)
 }
 
 func (h *FrontendHandler) handleShare(w http.ResponseWriter, r *http.Request, user string, ufs *fs.UserFS) {
+	// TODO: Rework with FS
 	path := r.FormValue("name")
-	userRoot := filepath.Join(h.rootDir, "users", user)
+	userRoot := filepath.Join(h.rootDir, "user", user)
 	absPath := filepath.Join(userRoot, strings.TrimPrefix(path, "/"+user+"/")) // TODO: to ufs
 
 	linkID, err := h.shareMgr.CreateShare(absPath)
