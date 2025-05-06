@@ -8,8 +8,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/dustin/go-humanize"
 
 	"golang.org/x/net/webdav"
 )
@@ -33,32 +36,24 @@ func NewUserFS(root string, quota *Quota, server *UserFSServer) *UserFS {
 	}
 }
 
-func (u *UserFS) Root() string {
-	return u.root
-}
+func (u *UserFS) Root() string { return u.root }
 
 func (u *UserFS) resolvePath(name string) (string, error) {
 	cleaned := filepath.Clean(name)
-
 	if cleaned == "/" || cleaned == "." || cleaned == "" {
 		return u.root, nil
 	}
-
 	if strings.HasPrefix(cleaned, "/") {
 		cleaned = strings.TrimPrefix(cleaned, "/")
 	}
-
 	if strings.HasPrefix(cleaned, "..") {
 		return "", fs.ErrInvalid
 	}
-
 	fullPath := filepath.Join(u.root, name)
-
 	rel, err := filepath.Rel(u.root, fullPath)
 	if err != nil || strings.HasPrefix(rel, "..") {
 		return "", fs.ErrInvalid
 	}
-
 	return fullPath, nil
 }
 
@@ -66,30 +61,24 @@ func (u *UserFS) resolvePath(name string) (string, error) {
 func (u *UserFS) WriteFile(name string, file io.Reader, sz int64) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-
 	fullPath, err := u.resolvePath(name)
 	if err != nil {
 		return err
 	}
-
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		return err
 	}
-
 	if err := u.checkQuotas(sz); err != nil {
 		return err
 	}
-
 	dstFile, err := os.Create(fullPath)
 	if err != nil {
 		return err
 	}
 	defer dstFile.Close()
-
 	if _, err := io.Copy(dstFile, file); err != nil {
 		return err
 	}
-
 	u.updateQuotas(sz)
 	return nil
 }
@@ -98,13 +87,11 @@ func (u *UserFS) WriteFile(name string, file io.Reader, sz int64) error {
 func (u *UserFS) Open(ctx context.Context, path string) (fs.File, error) {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
-
 	fullPath, err := u.resolvePath(path)
 	if err != nil {
 		log.Printf("Path %s open error: fs.ErrInvalid", path)
 		return nil, &fs.PathError{Op: "open", Path: path, Err: fs.ErrInvalid}
 	}
-
 	return os.Open(fullPath)
 }
 
@@ -112,13 +99,11 @@ func (u *UserFS) Open(ctx context.Context, path string) (fs.File, error) {
 func (u *UserFS) OpenFile(ctx context.Context, path string, flag int, perm os.FileMode) (webdav.File, error) {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
-
 	fullPath, err := u.resolvePath(path)
 	if err != nil {
 		log.Printf("Path %s open error: fs.ErrInvalid", path)
 		return nil, &fs.PathError{Op: "open", Path: path, Err: fs.ErrInvalid}
 	}
-
 	/* TODO:
 	if flag&os.O_WRONLY != 0 || flag&os.O_RDWR != 0 || flag&os.O_APPEND != 0 {
 		if fs.quota > 0 {
@@ -127,7 +112,6 @@ func (u *UserFS) OpenFile(ctx context.Context, path string, flag int, perm os.Fi
 			}
 		}
 	}*/
-
 	return os.OpenFile(fullPath, flag, perm)
 }
 
@@ -135,12 +119,10 @@ func (u *UserFS) OpenFile(ctx context.Context, path string, flag int, perm os.Fi
 func (u *UserFS) Stat(ctx context.Context, name string) (fs.FileInfo, error) {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
-
 	fullPath, err := u.resolvePath(name)
 	if err != nil {
 		return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrInvalid}
 	}
-
 	info, err := os.Stat(fullPath)
 	if err != nil {
 		return nil, &fs.PathError{Op: "stat", Path: name, Err: err}
@@ -152,12 +134,10 @@ func (u *UserFS) Stat(ctx context.Context, name string) (fs.FileInfo, error) {
 func (u *UserFS) MkdirAll(ctx context.Context, path string, perm os.FileMode) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-
 	fullPath, err := u.resolvePath(path)
 	if err != nil {
 		return err
 	}
-
 	if err := os.MkdirAll(fullPath, perm); err != nil {
 		return &fs.PathError{
 			Op:   "mkdir",
@@ -165,7 +145,6 @@ func (u *UserFS) MkdirAll(ctx context.Context, path string, perm os.FileMode) er
 			Err:  err,
 		}
 	}
-
 	return nil
 }
 
@@ -173,14 +152,11 @@ func (u *UserFS) MkdirAll(ctx context.Context, path string, perm os.FileMode) er
 func (u *UserFS) Mkdir(ctx context.Context, path string, perm os.FileMode) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-
 	fullPath, err := u.resolvePath(path)
 	if err != nil {
 		return err
 	}
-
 	log.Printf("Full path: %s", fullPath)
-
 	if err := os.Mkdir(fullPath, perm); err != nil {
 		return &fs.PathError{
 			Op:   "mkdir",
@@ -188,7 +164,6 @@ func (u *UserFS) Mkdir(ctx context.Context, path string, perm os.FileMode) error
 			Err:  err,
 		}
 	}
-
 	return nil
 }
 
@@ -206,32 +181,27 @@ func (u *UserFS) Rename(ctx context.Context, oldName, newName string) error {
 	return os.Rename(oldPath, newPath)
 }
 
-// RemoveFile
-func (u *UserFS) RemoveAll(ctx context.Context, name string) error {
+// Remove everything at path
+func (u *UserFS) RemoveAll(ctx context.Context, path string) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-
-	fullPath, err := u.resolvePath(name)
+	fullPath, err := u.resolvePath(path)
 	if err != nil {
 		return err
 	}
-
 	info, err := os.Stat(fullPath)
 	if err != nil {
 		return err
 	}
-
 	var size int64
 	if info.IsDir() {
 		size = u.calculateDirSize(fullPath)
 	} else {
 		size = info.Size()
 	}
-
 	if err := os.RemoveAll(fullPath); err != nil {
 		return err
 	}
-
 	u.quota.AddUsage(-size)
 	if u.server.commonQuota != nil {
 		u.server.commonQuota.AddUsage(-size)
@@ -245,6 +215,27 @@ func (u *UserFS) ReadDir(path string) ([]fs.DirEntry, error) {
 		return nil, err
 	}
 	return os.ReadDir(fullPath)
+}
+
+func (u *UserFS) Search(re *regexp.Regexp) ([]FileEntry, error) {
+	var results []FileEntry
+	filepath.Walk(u.root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		relPath, _ := filepath.Rel(u.root, path)
+		if re.MatchString(info.Name()) {
+			results = append(results, FileEntry{
+				Name:    info.Name(),
+				RelPath: relPath,
+				IsDir:   info.IsDir(),
+				Size:    humanize.Bytes(uint64(info.Size())),
+				ModTime: info.ModTime().Format("2006-01-02 15:04:05"),
+			})
+		}
+		return nil
+	})
+	return results, nil
 }
 
 func (u *UserFS) calculateDirSize(path string) int64 {
@@ -266,7 +257,6 @@ func (u *UserFS) checkQuotas(size int64) error {
 	if total, _, remain := u.quota.Values(); total > 0 && remain < size {
 		return fmt.Errorf("user quota exceeded: remain %d < need %d", remain, size)
 	}
-
 	if u.server != nil {
 		return u.server.checkCommonQuota(size)
 	}
@@ -278,6 +268,11 @@ func (u *UserFS) updateQuotas(size int64) {
 	if u.server != nil && u.server.commonQuota != nil {
 		u.server.commonQuota.AddUsage(size)
 	}
+}
+
+func (u *UserFS) Init() {
+	used := u.calculateDirSize(u.root)
+	u.quota.AddUsage(used)
 }
 
 func (u *UserFS) FS() fs.FS {

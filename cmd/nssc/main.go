@@ -59,7 +59,6 @@ func main() {
 		}
 		host := os.Args[2]
 		rootDir := os.Args[3]
-
 		dbPath := filepath.Join(rootDir, "db.json")
 		var db users.UsersDB
 		if err := db.Load(dbPath); err != nil {
@@ -75,8 +74,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to create public dir: %v", err)
 		}
-
-		mainQuota := fs.NewQuota(0)
+		mainQuota := fs.NewQuota(0) // TODO
 		ufss, _ = fs.NewUserFSServer(filepath.Join(rootDir, "user"), mainQuota, db.Users)
 
 		/*go func() {
@@ -88,6 +86,7 @@ func main() {
 		}()*/
 
 		frontendHandler := frontend.NewHandler(&db, rootDir, ufss)
+		frontendHandler.FillCSS()
 		apiHandler := api.NewHandler(&db, rootDir, ufss)
 		publicHandler := http.StripPrefix("/public/",
 			http.FileServer(http.Dir(filepath.Join(rootDir, "public"))))
@@ -95,13 +94,14 @@ func main() {
 
 		mux := http.NewServeMux()
 		mux.Handle("/", frontendHandler)
+		mux.HandleFunc("/style.css", frontendHandler.ServeCSSFile)
+		mux.HandleFunc("/favicon.ico", frontendHandler.ServeFaviconFile)
 		mux.Handle("/api/", http.StripPrefix("/api", apiHandler))
 		mux.Handle("/public/", publicHandler)
 		mux.Handle("/webdav/", webdavHandler)
 
 		log.Printf("Server running at %s", host)
 		log.Fatal(http.ListenAndServe(host, mux))
-
 	default:
 		log.Fatal("Unknown command")
 	}

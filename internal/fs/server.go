@@ -25,19 +25,16 @@ func NewUserFSServer(root string, commonQuota *Quota, users []users.User) (*User
 	if err := os.MkdirAll(root, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create root directory: %w", err)
 	}
-
 	server := &UserFSServer{
 		root:        root,
 		commonQuota: commonQuota,
 		users:       make(map[string]*UserFS),
 	}
-
 	for _, user := range users {
 		userRoot := filepath.Join(root, user.Name)
 		if err := os.MkdirAll(userRoot, 0755); err != nil {
 			return nil, fmt.Errorf("failed to create user directory: %w", err)
 		}
-
 		var used int64
 		filepath.Walk(userRoot, func(path string, info os.FileInfo, err error) error {
 			if !info.IsDir() {
@@ -45,19 +42,17 @@ func NewUserFSServer(root string, commonQuota *Quota, users []users.User) (*User
 			}
 			return nil
 		})
-
 		quota, err := humanize.ParseBytes(user.Quota)
 		if err != nil {
 			quota = 0
 		}
-
 		server.users[user.Name] = NewUserFS(
 			userRoot,
 			NewQuota(int64(quota)),
 			server,
 		)
+		server.users[user.Name].Init()
 	}
-
 	return server, nil
 }
 
@@ -65,7 +60,6 @@ func NewUserFSServer(root string, commonQuota *Quota, users []users.User) (*User
 func (s *UserFSServer) GetUserFS(username string) (*UserFS, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
 	fs, ok := s.users[username]
 	if !ok {
 		return nil, fmt.Errorf("fs for user %s not found", username)
@@ -76,7 +70,6 @@ func (s *UserFSServer) GetUserFS(username string) (*UserFS, error) {
 func (s *UserFSServer) checkCommonQuota(size int64) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
 	if s.commonQuota == nil {
 		return nil
 	}
