@@ -3,7 +3,7 @@
 
 # nssc
 
-nssc (not so simple cloud) - lightweight self-hosted cloud storage solution with multiple file server protocols.
+nssc (not so simple cloud) - lightweight self-hosted cloud storage solution with multiple file protocols.
 
 ![Screenshot of an example user directory](doc/user.png)
 
@@ -116,15 +116,16 @@ A more complete example:
 
 - base directory
 - username
-- password
 - user quota in MiB (optionally
 
 Example:
 
 ```sh
-nssc adduser ~/storage/ admin p@ssw0rd 10GiB
-nssc adduser ~/storage/ alice SecUr1ty 512MiB
+nssc adduser ~/storage/ alice 10GiB
+nssc adduser ~/storage/ bob 512MiB
 ```
+
+After executing the `adduser` command, you will be prompted to enter the password and confirm it interactively.
 
 Then, `adduser` appends a JSON object to the users JSON array in the `db.json` file located inside the given directory.
 Also, `adduser` creates the user directory inside the `user/` directory.

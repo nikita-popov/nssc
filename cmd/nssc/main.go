@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"log"
 	"net/http"
@@ -20,20 +21,19 @@ import (
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Println("Usage:")
-		fmt.Println("  adduser <rootDir> <username> <password> <quota>")
+		fmt.Println("  adduser <rootDir> <username> <quota>")
 		fmt.Println("  run <host> <rootDir>")
 		os.Exit(1)
 	}
 
 	switch os.Args[1] {
 	case "adduser":
-		if len(os.Args) != 6 {
-			log.Fatal("Usage: adduser <rootDir> <username> <password> <quota>")
+		if len(os.Args) != 5 {
+			log.Fatal("Usage: adduser <rootDir> <username> <quota>")
 		}
 		rootDir := os.Args[2]
 		username := os.Args[3]
-		password := os.Args[4]
-		quota := os.Args[5]
+		quota := os.Args[4]
 
 		dbPath := filepath.Join(rootDir, "db.json")
 		var db users.UsersDB
@@ -41,14 +41,27 @@ func main() {
 			log.Printf("Load DB error: %v, creating new DB", err)
 			db = users.UsersDB{}
 		}
+		reader := bufio.NewReader(os.Stdin)
+		fmt.Print("Enter password: ")
+		password, err := reader.ReadString('\n')
+		if err != nil {
+			log.Fatal("Password reading error:", err)
+		}
+		fmt.Print("Repeat password: ")
+		tmp, err := reader.ReadString('\n')
+		if err != nil {
+			log.Fatal("Password reading error:", err)
+		}
+		if tmp != password {
+			log.Fatal("Passwords mismatch")
+		}
 		if err := db.AddUser(username, password, quota); err != nil {
 			log.Fatal("Add user error:", err)
 		}
 		if err := db.Save(dbPath); err != nil {
 			log.Fatal("Save DB error:", err)
 		}
-		fmt.Println("User added:", username)
-
+		fmt.Printf("User %s added successfully\n", username)
 	case "run":
 		var (
 			//styxServer styx.Server

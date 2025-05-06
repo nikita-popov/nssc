@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
@@ -94,27 +95,27 @@ func (db *UsersDB) AddUser(name, password, quota string) error {
 
 	for _, u := range db.Users {
 		if u.Name == name {
-			log.Printf("[AddUser] User %s already exists", name)
+			fmt.Printf("User %s already exists", name)
 			return errors.New("user already exists")
 		}
 	}
 
 	saltBytes, err := generateRandomBytes(32)
 	if err != nil {
-		log.Printf("[AddUser] Failed to generate salt: %v", err)
+		fmt.Printf("Failed to generate salt: %v", err)
 		return err
 	}
 	salt := hex.EncodeToString(saltBytes)
 
 	hashedPassword, err := hashPassword(password, salt)
 	if err != nil {
-		log.Printf("[AddUser] Failed to hash password for user %s: %v", name, err)
+		fmt.Printf("Failed to hash password for user %s: %v", name, err)
 		return err
 	}
 
 	key, err := generateKey()
 	if err != nil {
-		log.Printf("[AddUser] Failed to generate key for user %s: %v", name, err)
+		fmt.Printf("Failed to generate key for user %s: %v", name, err)
 		return err
 	}
 
@@ -127,7 +128,6 @@ func (db *UsersDB) AddUser(name, password, quota string) error {
 	}
 
 	db.Users = append(db.Users, newUser)
-	log.Printf("[AddUser] User %s added successfully. Salt: %s, Key: %s", name, salt, key)
 	return nil
 }
 
