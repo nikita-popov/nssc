@@ -149,6 +149,16 @@ nssc run :8080 ~/storage/
 
 Shared files are accessible via: `http://{domain}/public/{uuidv7}`
 
+### Web-based
+
+Simple web file browser (same as in `slcl`).
+
+The `style.css` CSS file will be created in the storage root at `nssc` startup.
+If `style.css` file already exists it will not be overwritten.
+So styles can be customized.
+
+If the `favicon.ico` icon file is available at the storage root, it will be transmitted upon request.
+
 ### REST API
 
 #### Endpoints
