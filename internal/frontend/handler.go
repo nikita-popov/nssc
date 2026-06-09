@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -375,25 +374,7 @@ func (h *FrontendHandler) handleSearch(w http.ResponseWriter, r *http.Request, u
 		http.Error(w, "Invalid search pattern: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	var results []fs.FileEntry
-	_ = ufs.Walk(func(path string, info os.FileInfo, err error) error {
-		if err != nil || info == nil {
-			return nil
-		}
-		if re.MatchString(info.Name()) {
-			size := ""
-			if !info.IsDir() {
-				size = humanize.IBytes(uint64(info.Size()))
-			}
-			results = append(results, fs.FileEntry{
-				Name:    info.Name(),
-				RelPath: path,
-				IsDir:   info.IsDir(),
-				Size:    size,
-			})
-		}
-		return nil
-	})
+	results, _ := ufs.Search(re)
 	quotaTotal, quotaUsed, _ := ufs.GetQuota()
 	data := PageData{
 		User:          user,
@@ -420,8 +401,8 @@ func (h *FrontendHandler) handleShare(w http.ResponseWriter, r *http.Request, us
 		http.Error(w, "File not found", http.StatusNotFound)
 		return
 	}
-	absPath := filepath.Join(h.rootDir, "user", user, relPath)
-	link, err := h.shareMgr.CreateShare(absPath)
+	userRoot := filepath.Join(h.rootDir, "user", user)
+	link, err := h.shareMgr.CreateShare(userRoot, relPath)
 	if err != nil {
 		log.Printf("Share error: %v", err)
 		http.Error(w, "Sharing failed", http.StatusInternalServerError)
