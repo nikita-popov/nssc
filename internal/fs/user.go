@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dustin/go-humanize"
 
@@ -94,7 +95,7 @@ func (u *UserFS) WriteFile(name string, file io.Reader, sz int64) error {
 	return nil
 }
 
-// For fs.FS interface
+// Open opens a file for reading. Implements fs.FS.
 func (u *UserFS) Open(ctx context.Context, path string) (fs.File, error) {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
@@ -106,7 +107,7 @@ func (u *UserFS) Open(ctx context.Context, path string) (fs.File, error) {
 	return os.Open(fullPath)
 }
 
-// For fs.FS WebDAV interface
+// OpenFile opens a file with the given flags and permissions. Used by WebDAV.
 func (u *UserFS) OpenFile(ctx context.Context, path string, flag int, perm os.FileMode) (webdav.File, error) {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
@@ -118,8 +119,7 @@ func (u *UserFS) OpenFile(ctx context.Context, path string, flag int, perm os.Fi
 	return os.OpenFile(fullPath, flag, perm)
 }
 
-// Create opens or creates a file for writing, with the given permissions.
-// Used by 9P Tcreate handler.
+// Create creates or truncates a file for reading and writing. Used by 9P Tcreate.
 func (u *UserFS) Create(ctx context.Context, path string, perm os.FileMode) (*os.File, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -133,8 +133,7 @@ func (u *UserFS) Create(ctx context.Context, path string, perm os.FileMode) (*os
 	return os.OpenFile(fullPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, perm)
 }
 
-// Remove removes a single file or empty directory.
-// Used by 9P Tremove handler.
+// Remove removes a single file or empty directory. Used by 9P Tremove.
 func (u *UserFS) Remove(ctx context.Context, path string) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -154,8 +153,7 @@ func (u *UserFS) Remove(ctx context.Context, path string) error {
 	return nil
 }
 
-// Truncate truncates a file to the given size.
-// Used by 9P Ttruncate handler.
+// Truncate truncates a file to the given size. Used by 9P Ttruncate.
 func (u *UserFS) Truncate(ctx context.Context, path string, size int64) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -180,16 +178,15 @@ func (u *UserFS) Truncate(ctx context.Context, path string, size int64) error {
 	return nil
 }
 
-// Chtimes updates access and modification times of a file.
-// Used by 9P Tutimes handler.
-func (u *UserFS) Chtimes(ctx context.Context, path string, atime, mtime interface{ IsZero() bool }) error {
+// Chtimes updates access and modification times of a file. Used by 9P Tutimes.
+func (u *UserFS) Chtimes(ctx context.Context, path string, atime, mtime time.Time) error {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
 	fullPath, err := u.resolvePath(path)
 	if err != nil {
 		return err
 	}
-	return os.Chtimes(fullPath, os.Chtimes_atime(atime), os.Chtimes_mtime(mtime))
+	return os.Chtimes(fullPath, atime, mtime)
 }
 
 // CheckQuota returns an error if adding size bytes would exceed the user quota.
@@ -205,7 +202,7 @@ func (u *UserFS) AddUsage(delta int64) {
 	u.updateQuotas(delta)
 }
 
-// For fs.StatFS interface
+// Stat returns file info. Implements fs.StatFS.
 func (u *UserFS) Stat(ctx context.Context, name string) (fs.FileInfo, error) {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
@@ -271,7 +268,7 @@ func (u *UserFS) Rename(ctx context.Context, oldName, newName string) error {
 	return os.Rename(oldPath, newPath)
 }
 
-// Remove everything at path
+// RemoveAll removes a file or directory tree.
 func (u *UserFS) RemoveAll(ctx context.Context, path string) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()

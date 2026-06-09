@@ -12,7 +12,6 @@ import (
 	"net"
 	"os"
 	"path"
-	"time"
 
 	"aqwari.net/net/styx"
 	fsinternal "nssc/internal/fs"
@@ -145,8 +144,8 @@ func newQuotaWriter(rwc io.ReadWriteCloser, ufs *fsinternal.UserFS) *quotaWriter
 	return &quotaWriter{inner: rwc, ufs: ufs}
 }
 
-func (qw *quotaWriter) Read(p []byte) (int, error)  { return qw.inner.Read(p) }
-func (qw *quotaWriter) Close() error                { return qw.inner.Close() }
+func (qw *quotaWriter) Read(p []byte) (int, error) { return qw.inner.Read(p) }
+func (qw *quotaWriter) Close() error               { return qw.inner.Close() }
 
 func (qw *quotaWriter) Write(p []byte) (int, error) {
 	if err := qw.ufs.CheckQuota(int64(len(p))); err != nil {
@@ -162,6 +161,3 @@ func (qw *quotaWriter) Write(p []byte) (int, error) {
 
 // Ensure quotaWriter satisfies io.ReadWriteCloser at compile time.
 var _ io.ReadWriteCloser = (*quotaWriter)(nil)
-
-// Tutimes time values — styx passes time.Time directly.
-var _ = time.Time{}
