@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build windows
 
 package fs
 
@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 
 	"github.com/dustin/go-humanize"
 
@@ -23,7 +22,6 @@ type UserFSServer struct {
 }
 
 // NewUserFSServer initialises a UserFSServer and per-user directories.
-// Quota usage is calculated inside each UserFS.Init() — no double counting.
 func NewUserFSServer(root string, commonQuota *Quota, userList []users.User) (*UserFSServer, error) {
 	if err := os.MkdirAll(root, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create root directory: %w", err)
@@ -43,7 +41,7 @@ func NewUserFSServer(root string, commonQuota *Quota, userList []users.User) (*U
 			quota = 0
 		}
 		ufs := NewUserFS(userRoot, NewQuota(int64(quota)), server)
-		ufs.Init() // calculates initial used space; no pre-Walk needed
+		ufs.Init()
 		server.users[user.Name] = ufs
 	}
 	return server, nil
@@ -72,18 +70,12 @@ func (s *UserFSServer) checkCommonQuota(size int64) error {
 	return nil
 }
 
-// DiskFree returns free bytes on the filesystem hosting root.
-// Only available on Linux/macOS (build tag !windows).
+// DiskFree is not supported on Windows.
 func (s *UserFSServer) DiskFree() (int64, error) {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(s.root, &stat); err != nil {
-		return 0, err
-	}
-	return int64(stat.Bavail) * int64(stat.Bsize), nil
+	return 0, fmt.Errorf("DiskFree not supported on Windows")
 }
 
 // safeDirSize returns total size of regular files under path.
-// Errors and nil FileInfo entries are silently skipped.
 func safeDirSize(path string) int64 {
 	var size int64
 	filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {

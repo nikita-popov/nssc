@@ -1,12 +1,11 @@
 package users
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"crypto/rand"
+	"encoding/hex"
 	"log"
 	"os"
 	"sync"
@@ -16,11 +15,12 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// User represents a single user account.
+// Salt field removed: bcrypt embeds a random salt inside the hash itself.
 type User struct {
 	Name     string `json:"name"`
-	Password string `json:"password"` // bcrypt hashed password + salt
-	Salt     string `json:"salt"`     // random salt
-	Key      string `json:"key"`      // random key for JWT signing
+	Password string `json:"password"` // bcrypt hash (salt embedded)
+	Key      string `json:"key"`      // random 256-bit key for JWT signing
 	Quota    string `json:"quota"`    // quota string like "1GiB"
 }
 
@@ -34,7 +34,7 @@ func (db *UsersDB) Load(path string) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	data, err := ioutil.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			db.Users = []User{}
@@ -45,11 +45,11 @@ func (db *UsersDB) Load(path string) error {
 	return json.Unmarshal(data, db)
 }
 
-func (db *UsersDB) SetRoot(path string) error {
+// SetRoot sets the root directory for the database (no error to return).
+func (db *UsersDB) SetRoot(path string) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	db.Root = path
-	return nil
 }
 
 func (db *UsersDB) Save(path string) error {
@@ -60,7 +60,7 @@ func (db *UsersDB) Save(path string) error {
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0644)
 }
 
 func generateRandomBytes(n int) ([]byte, error) {
@@ -72,9 +72,9 @@ func generateRandomBytes(n int) ([]byte, error) {
 	return b, nil
 }
 
-func hashPassword(password, salt string) (string, error) {
-	saltedPassword := password + salt
-	hash, err := bcrypt.GenerateFromPassword([]byte(saltedPassword), bcrypt.DefaultCost)
+// hashPassword hashes password using bcrypt (salt is embedded in the hash).
+func hashPassword(password string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return "", err
 	}
@@ -82,7 +82,7 @@ func hashPassword(password, salt string) (string, error) {
 }
 
 func generateKey() (string, error) {
-	keyBytes, err := generateRandomBytes(32) // 256-bit key
+	keyBytes, err := generateRandomBytes(32)
 	if err != nil {
 		return "", err
 	}
@@ -95,34 +95,26 @@ func (db *UsersDB) AddUser(name, password, quota string) error {
 
 	for _, u := range db.Users {
 		if u.Name == name {
-			fmt.Printf("User %s already exists", name)
+			log.Printf("User %s already exists", name)
 			return errors.New("user already exists")
 		}
 	}
 
-	saltBytes, err := generateRandomBytes(32)
+	hashedPassword, err := hashPassword(password)
 	if err != nil {
-		fmt.Printf("Failed to generate salt: %v", err)
-		return err
-	}
-	salt := hex.EncodeToString(saltBytes)
-
-	hashedPassword, err := hashPassword(password, salt)
-	if err != nil {
-		fmt.Printf("Failed to hash password for user %s: %v", name, err)
+		log.Printf("Failed to hash password for user %s: %v", name, err)
 		return err
 	}
 
 	key, err := generateKey()
 	if err != nil {
-		fmt.Printf("Failed to generate key for user %s: %v", name, err)
+		log.Printf("Failed to generate key for user %s: %v", name, err)
 		return err
 	}
 
 	newUser := User{
 		Name:     name,
 		Password: hashedPassword,
-		Salt:     salt,
 		Key:      key,
 		Quota:    quota,
 	}
@@ -137,8 +129,7 @@ func (db *UsersDB) Authenticate(name, password string) bool {
 
 	for _, u := range db.Users {
 		if u.Name == name {
-			saltedPassword := password + u.Salt
-			err := bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(saltedPassword))
+			err := bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(password))
 			if err != nil {
 				log.Printf("[Authenticate] Password mismatch for user %s: %v", name, err)
 				return false
@@ -150,16 +141,17 @@ func (db *UsersDB) Authenticate(name, password string) bool {
 	return false
 }
 
+// GetUser returns a pointer to the actual User element in the slice (not a copy).
 func (db *UsersDB) GetUser(name string) *User {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	for _, u := range db.Users {
-		if u.Name == name {
-			return &u
+	for i := range db.Users {
+		if db.Users[i].Name == name {
+			return &db.Users[i]
 		}
 	}
-	log.Printf("[Authenticate] User %s not found", name)
+	log.Printf("[GetUser] User %s not found", name)
 	return nil
 }
 
@@ -175,9 +167,12 @@ func (db *UsersDB) GetUserKey(name string) (string, error) {
 	return "", errors.New("user not found")
 }
 
+// GetUsers returns a list of all usernames. Protected by mutex.
 func (db *UsersDB) GetUsers() ([]string, error) {
-	var res []string
+	db.mu.Lock()
+	defer db.mu.Unlock()
 
+	res := make([]string, 0, len(db.Users))
 	for _, user := range db.Users {
 		res = append(res, user.Name)
 	}
@@ -189,7 +184,6 @@ func (u *User) GenerateJWT() (string, error) {
 		"sub": u.Name,
 		"exp": time.Now().Add(24 * time.Hour).Unix(),
 	}
-
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(u.Key))
 }
@@ -201,4 +195,23 @@ func (u *User) ValidateJWT(tokenString string) (*jwt.Token, error) {
 		}
 		return []byte(u.Key), nil
 	})
+}
+
+// GetUsernameFromJWT extracts the "sub" claim from a raw JWT string
+// without verifying the signature (used for user lookup before key retrieval).
+func GetUsernameFromJWT(tokenString string) (string, error) {
+	parser := jwt.NewParser(jwt.WithoutClaimsValidation())
+	token, _, err := parser.ParseUnverified(tokenString, jwt.MapClaims{})
+	if err != nil {
+		return "", fmt.Errorf("parse JWT: %w", err)
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return "", errors.New("invalid JWT claims")
+	}
+	sub, ok := claims["sub"].(string)
+	if !ok || sub == "" {
+		return "", errors.New("missing sub claim")
+	}
+	return sub, nil
 }
