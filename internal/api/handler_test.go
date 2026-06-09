@@ -11,16 +11,24 @@ import (
 	"nssc/internal/users"
 )
 
+// newTestHandler wraps api.Handler the same way main.go does:
+// http.StripPrefix("/api/", handler) so the handler receives paths
+// without the /api/ prefix.
+func newTestHandler(db *users.UsersDB, rootDir string, ufss *fs.UserFSServer) http.Handler {
+	return http.StripPrefix("/api/", api.NewHandler(db, rootDir, ufss))
+}
+
 func TestAPIHandler(t *testing.T) {
 	db := &users.UsersDB{}
 	db.AddUser("user", "pass", "1GiB")
 	mainQuota := fs.NewQuota(0)
 	ufss, _ := fs.NewUserFSServer("/tmp/users", mainQuota, db.Users)
-	handler := api.NewHandler(db, "/tmp", ufss)
+	handler := newTestHandler(db, "/tmp", ufss)
 
 	t.Run("File upload", func(t *testing.T) {
 		req := httptest.NewRequest("PUT", "/api/user/file.txt", strings.NewReader("content"))
 		req.SetBasicAuth("user", "pass")
+		req.ContentLength = int64(len("content"))
 		w := httptest.NewRecorder()
 
 		handler.ServeHTTP(w, req)
@@ -30,7 +38,7 @@ func TestAPIHandler(t *testing.T) {
 	})
 
 	t.Run("Directory listing", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/user/", nil)
+		req := httptest.NewRequest("GET", "/api/user/", nil)
 		req.SetBasicAuth("user", "pass")
 		w := httptest.NewRecorder()
 
