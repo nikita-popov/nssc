@@ -21,7 +21,7 @@ import (
 // Server listens for 9P connections and dispatches sessions per user.
 type Server struct {
 	usersDB *users.UsersDB
-	fsSrv  *fsinternal.UserFSServer
+	fsSrv   *fsinternal.UserFSServer
 }
 
 // NewServer creates a 9P server that authenticates against usersDB and
@@ -87,14 +87,21 @@ func (srv *Server) Serve9P(s *styx.Session) {
 
 		case styx.Topen:
 			p := cleanPath(msg.Path())
-			f, err := ufs.Open(ctx, p)
-			if err != nil {
-				msg.Ropen(nil, err)
-				continue
-			}
+			// fs.File is read-only; writable opens need OpenFile which
+			// returns *os.File (satisfies io.ReadWriteCloser).
 			if msg.Flag&os.O_WRONLY != 0 || msg.Flag&os.O_RDWR != 0 {
+				f, err := ufs.OpenFile(ctx, p, msg.Flag, 0644)
+				if err != nil {
+					msg.Ropen(nil, err)
+					continue
+				}
 				msg.Ropen(newQuotaWriter(f, ufs), nil)
 			} else {
+				f, err := ufs.Open(ctx, p)
+				if err != nil {
+					msg.Ropen(nil, err)
+					continue
+				}
 				msg.Ropen(f, nil)
 			}
 
