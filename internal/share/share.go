@@ -20,6 +20,7 @@ func NewShareManager(publicDir string) *ShareManager {
 
 // CreateShare validates that relPath is inside userRoot, then creates a
 // symlink with a UUIDv7 name in PublicDir pointing to the resolved absolute path.
+// PublicDir is created on first use if it does not exist.
 func (sm *ShareManager) CreateShare(userRoot, relPath string) (string, error) {
 	abs := filepath.Join(userRoot, relPath)
 	resolved, err := filepath.EvalSymlinks(abs)
@@ -30,6 +31,11 @@ func (sm *ShareManager) CreateShare(userRoot, relPath string) (string, error) {
 	cleanRoot := filepath.Clean(userRoot)
 	if !strings.HasPrefix(resolved, cleanRoot+string(filepath.Separator)) {
 		return "", fmt.Errorf("path outside user root")
+	}
+
+	// Create PublicDir lazily so a fresh data directory works out of the box.
+	if err := os.MkdirAll(sm.PublicDir, 0750); err != nil {
+		return "", fmt.Errorf("failed to create public dir: %w", err)
 	}
 
 	uid, err := uuid.NewV7()

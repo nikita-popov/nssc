@@ -2,11 +2,9 @@ package fs
 
 import (
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 
 	"github.com/dustin/go-humanize"
 
@@ -69,31 +67,4 @@ func (s *UserFSServer) checkCommonQuota(size int64) error {
 		return fmt.Errorf("common quota exceeded: remain %d < need %d", remain, size)
 	}
 	return nil
-}
-
-// DiskFree returns free bytes on the filesystem hosting root.
-func (s *UserFSServer) DiskFree() (int64, error) {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(s.root, &stat); err != nil {
-		return 0, err
-	}
-	return int64(stat.Bavail) * int64(stat.Bsize), nil
-}
-
-// safeDirSize returns total size of regular files under path.
-// Uses fs.WalkDir to avoid the per-entry Lstat call of filepath.Walk.
-func safeDirSize(path string) int64 {
-	var size int64
-	fs.WalkDir(os.DirFS(path), ".", func(_ string, d fs.DirEntry, err error) error {
-		if err != nil || d == nil || d.IsDir() {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		size += info.Size()
-		return nil
-	})
-	return size
 }

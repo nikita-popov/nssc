@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/dustin/go-humanize"
+	"github.com/golang-jwt/jwt/v5"
 
 	"nssc/internal/fs"
 	"nssc/internal/share"
@@ -53,22 +54,36 @@ func NewHandler(db *users.UsersDB, rootDir string, fs *fs.UserFSServer, maxMemor
 }
 
 // GetUserFromCookie looks up the authenticated user from the nssc_session cookie.
-// The cookie value is a JWT; the "sub" claim carries the username, so only one
-// user lookup is needed instead of iterating every user.
+// The JWT "sub" claim carries the username, so only one bcrypt verification is
+// performed regardless of how many users exist in the database.
 func (h *FrontendHandler) GetUserFromCookie(r *http.Request) *users.User {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
 		return nil
 	}
-	// Parse the JWT header+claims without verification to extract sub cheaply.
-	// Full verification follows with the user's own signing key.
-	for _, u := range h.db.GetAllUsers() {
-		token, err := u.ValidateJWT(cookie.Value)
-		if err == nil && token.Valid {
-			return &u
-		}
+	// Parse without verification to extract the "sub" claim cheaply.
+	// Full signature verification follows with the user's own key.
+	unverified, _, err := new(jwt.Parser).ParseUnverified(cookie.Value, jwt.MapClaims{})
+	if err != nil {
+		return nil
 	}
-	return nil
+	claims, ok := unverified.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil
+	}
+	sub, _ := claims["sub"].(string)
+	if sub == "" {
+		return nil
+	}
+	u := h.db.GetUser(sub)
+	if u == nil {
+		return nil
+	}
+	token, err := u.ValidateJWT(cookie.Value)
+	if err != nil || !token.Valid {
+		return nil
+	}
+	return u
 }
 
 func (h *FrontendHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -262,7 +277,7 @@ func (h *FrontendHandler) handleUpload(w http.ResponseWriter, r *http.Request, u
 	sz := header.Size
 	var src io.Reader = file
 	if sz < 0 {
-		// Unknown size (streaming upload): buffer into memory to get the real size.
+		// Unknown size (streaming upload): buffer to get the real size.
 		buf := &bytes.Buffer{}
 		if _, err := io.Copy(buf, file); err != nil {
 			http.Error(w, "Read error: "+err.Error(), http.StatusInternalServerError)
@@ -334,6 +349,7 @@ func (h *FrontendHandler) handleLogout(w http.ResponseWriter, r *http.Request, u
 	})
 	w.Header().Set("WWW-Authenticate", `Basic realm="CloudStorage"`)
 	log.Printf("User %s logged out", username)
+	// 303 SeeOther: correct redirect code after a POST action.
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -344,7 +360,7 @@ func (h *FrontendHandler) handleSearch(w http.ResponseWriter, r *http.Request, u
 		http.Redirect(w, r, "/"+user, http.StatusSeeOther)
 		return
 	}
-	// Guard against ReDoS: reject overly long patterns
+	// Guard against ReDoS: reject overly long patterns.
 	if len(query) > 200 {
 		http.Error(w, "Search query too long", http.StatusBadRequest)
 		return
