@@ -10,28 +10,25 @@ import (
 	"nssc/internal/users"
 )
 
+// WebDAVHandler serves WebDAV requests, routing per-user to the corresponding UserFS.
 type WebDAVHandler struct {
-	db         *users.UsersDB
-	rootDir    string
-	fileSystem webdav.FileSystem
-	lockSystem webdav.LockSystem
-	fs         *fs.UserFSServer
+	db      *users.UsersDB
+	rootDir string
+	fs      *fs.UserFSServer
 }
 
-func NewHandler(db *users.UsersDB, rootDir string, fs *fs.UserFSServer) http.Handler {
+func NewHandler(db *users.UsersDB, rootDir string, ufs *fs.UserFSServer) http.Handler {
 	return &WebDAVHandler{
-		db:         db,
-		rootDir:    rootDir,
-		fileSystem: webdav.Dir(rootDir),
-		lockSystem: webdav.NewMemLS(),
-		fs:         fs,
+		db:      db,
+		rootDir: rootDir,
+		fs:      ufs,
 	}
 }
 
 func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/webdav/")
 	parts := strings.SplitN(path, "/", 2)
-	if len(parts) < 1 {
+	if len(parts) < 1 || parts[0] == "" {
 		http.Error(w, "Invalid path", http.StatusBadRequest)
 		return
 	}
@@ -46,49 +43,38 @@ func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ufs, err := h.fs.GetUserFS(user)
 	if err != nil {
-		// TODO
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		http.Error(w, "User filesystem not found", http.StatusNotFound)
 		return
 	}
 
+	// LockSystem is created per ServeHTTP call to prevent cross-user lock leakage.
 	handler := &webdav.Handler{
 		Prefix:     "/webdav/" + username,
 		FileSystem: ufs,
-		LockSystem: h.lockSystem,
+		LockSystem: webdav.NewMemLS(),
 	}
 
-	h.quotaMiddleware(handler).ServeHTTP(w, r)
+	h.quotaMiddleware(handler, ufs).ServeHTTP(w, r)
 }
 
-// Middleware for quota checking
-func (h *WebDAVHandler) quotaMiddleware(next http.Handler) http.Handler {
+// quotaMiddleware rejects write operations that would exceed the user's quota.
+// ufs is passed directly to avoid a redundant GetUserFS lookup.
+func (h *WebDAVHandler) quotaMiddleware(next http.Handler, ufs *fs.UserFS) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "PUT" || r.Method == "MKCOL" || r.Method == "COPY" || r.Method == "MOVE" {
-			username := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/webdav/"), "/", 2)[0]
-			user := h.db.GetUser(username)
-
-			ufs, err := h.fs.GetUserFS(user.Name)
-			if err != nil {
-				// TODO
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
-
+		switch r.Method {
+		case "PUT", "MKCOL", "COPY", "MOVE":
 			total, used, _ := ufs.GetQuota()
 			if total > 0 {
 				var needed int64
-
 				if r.Method == "PUT" {
 					needed = r.ContentLength
 				}
-
 				if uint64(used+needed) > uint64(total) {
 					http.Error(w, "Quota exceeded", http.StatusInsufficientStorage)
 					return
 				}
 			}
 		}
-
 		next.ServeHTTP(w, r)
 	})
 }
