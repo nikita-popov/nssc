@@ -361,13 +361,13 @@ func (h *FrontendHandler) handleSearch(w http.ResponseWriter, r *http.Request, u
 func (h *FrontendHandler) handleShare(w http.ResponseWriter, r *http.Request, user string, ufs *fs.UserFS) {
 	ctx := context.Background()
 	path := r.FormValue("name")
-	// Validate path is inside user FS (resolvePath called internally by Stat)
+	// Stat confirms the path exists and is inside the user root (resolvePath called internally).
 	if _, err := ufs.Stat(ctx, path); err != nil {
 		http.Error(w, "Path not found", http.StatusNotFound)
 		return
 	}
-	absPath := filepath.Join(ufs.Root(), path)
-	linkID, err := h.shareMgr.CreateShare(absPath)
+	// Pass userRoot + relPath; CreateShare performs EvalSymlinks and boundary check.
+	linkID, err := h.shareMgr.CreateShare(ufs.Root(), path)
 	if err != nil {
 		http.Error(w, "Share error: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -377,7 +377,7 @@ func (h *FrontendHandler) handleShare(w http.ResponseWriter, r *http.Request, us
 	http.Redirect(w, r, redirectURL+"?share="+linkID, http.StatusSeeOther)
 }
 
-// Check if CSS file exists, create if not
+// FillCSS creates the CSS file in rootDir if it does not exist.
 func (h *FrontendHandler) FillCSS() {
 	path := h.rootDir + "/style.css"
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {

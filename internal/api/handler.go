@@ -186,13 +186,13 @@ func (h *APIHandler) handleDelete(w http.ResponseWriter, r *http.Request, ctx co
 }
 
 func (h *APIHandler) createShare(w http.ResponseWriter, ctx context.Context, path string, ufs *fs.UserFS) {
-	// Validate path exists inside user FS before sharing
+	// Stat confirms the path exists and is inside the user root (resolvePath is called internally).
 	if _, err := ufs.Stat(ctx, path); err != nil {
 		sendJSONError(w, "Path not found", http.StatusNotFound)
 		return
 	}
-	absPath := filepath.Join(ufs.Root(), path)
-	linkID, err := h.shareMgr.CreateShare(absPath)
+	// Pass userRoot + relPath; CreateShare performs EvalSymlinks and boundary check.
+	linkID, err := h.shareMgr.CreateShare(ufs.Root(), path)
 	if err != nil {
 		sendJSONError(w, "Sharing failed", http.StatusInternalServerError)
 		return
