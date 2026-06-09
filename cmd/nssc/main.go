@@ -71,7 +71,8 @@ func runServer(args []string) {
 	webdavHandler := webdav.NewHandler(db, rootDir, ufss)
 	mux.Handle("/webdav/", webdavHandler)
 
-	frontendHandler := frontend.NewHandler(db, rootDir, ufss)
+	// 0 = use default 100 MiB multipart memory limit.
+	frontendHandler := frontend.NewHandler(db, rootDir, ufss, 0)
 	mux.Handle("/", frontendHandler)
 
 	if *ninepAddr != "" {
