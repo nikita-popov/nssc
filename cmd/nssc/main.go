@@ -65,6 +65,13 @@ func runServer(args []string) {
 
 	mux := http.NewServeMux()
 
+	// Serve the embedded stylesheet so the browser does not get a 404.
+	mux.HandleFunc("/style.css", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		w.Header().Set("Cache-Control", "max-age=3600")
+		fmt.Fprint(w, frontend.CSS)
+	})
+
 	apiHandler := api.NewHandler(db, rootDir, ufss)
 	mux.Handle("/api/", http.StripPrefix("/api", apiHandler))
 
