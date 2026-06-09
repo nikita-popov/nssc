@@ -304,19 +304,28 @@ func (u *UserFS) ReadDir(path string) ([]fs.DirEntry, error) {
 	return os.ReadDir(fullPath)
 }
 
+// Search walks the user root and returns entries whose names match re.
+// Uses fs.WalkDir to avoid the per-entry Lstat call of filepath.Walk.
 func (u *UserFS) Search(re *regexp.Regexp) ([]FileEntry, error) {
 	var results []FileEntry
-	filepath.Walk(u.root, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info == nil {
+	fs.WalkDir(os.DirFS(u.root), ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil {
 			return nil
 		}
-		relPath, _ := filepath.Rel(u.root, path)
-		if re.MatchString(info.Name()) {
+		if re.MatchString(d.Name()) {
+			info, err := d.Info()
+			if err != nil {
+				return nil
+			}
+			size := ""
+			if !d.IsDir() {
+				size = humanize.Bytes(uint64(info.Size()))
+			}
 			results = append(results, FileEntry{
-				Name:    info.Name(),
-				RelPath: relPath,
-				IsDir:   info.IsDir(),
-				Size:    humanize.Bytes(uint64(info.Size())),
+				Name:    d.Name(),
+				RelPath: path,
+				IsDir:   d.IsDir(),
+				Size:    size,
 				ModTime: info.ModTime().Format("2006-01-02 15:04:05"),
 			})
 		}
@@ -325,15 +334,19 @@ func (u *UserFS) Search(re *regexp.Regexp) ([]FileEntry, error) {
 	return results, nil
 }
 
+// calculateDirSize returns the total size of regular files under path.
+// Uses fs.WalkDir to avoid the per-entry Lstat call of filepath.Walk.
 func (u *UserFS) calculateDirSize(path string) int64 {
 	var size int64
-	filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
-		if err != nil || info == nil {
+	fs.WalkDir(os.DirFS(path), ".", func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() {
 			return nil
 		}
-		if !info.IsDir() {
-			size += info.Size()
+		info, err := d.Info()
+		if err != nil {
+			return nil
 		}
+		size += info.Size()
 		return nil
 	})
 	return size

@@ -20,17 +20,32 @@ import (
 	"nssc/internal/users"
 )
 
+const defaultUploadMaxMemory = 100 << 20 // 100 MiB
+
 type FrontendHandler struct {
-	db       *users.UsersDB
-	rootDir  string
-	shareMgr *share.ShareManager
-	template *template.Template
-	fs       *fs.UserFSServer
+	db              *users.UsersDB
+	rootDir         string
+	shareMgr        *share.ShareManager
+	template        *template.Template
+	fs              *fs.UserFSServer
+	uploadMaxMemory int64 // max multipart memory; 0 → defaultUploadMaxMemory
 }
 
-func NewHandler(db *users.UsersDB, rootDir string, fs *fs.UserFSServer) *FrontendHandler {
+// NewHandler creates a FrontendHandler.
+// Pass maxMemory > 0 to override the default 100 MiB multipart limit.
+func NewHandler(db *users.UsersDB, rootDir string, fs *fs.UserFSServer, maxMemory int64) *FrontendHandler {
+	if maxMemory <= 0 {
+		maxMemory = defaultUploadMaxMemory
+	}
 	shareMgr := share.NewShareManager(filepath.Join(rootDir, "public"))
-	return &FrontendHandler{db: db, rootDir: rootDir, shareMgr: shareMgr, template: tplPage, fs: fs}
+	return &FrontendHandler{
+		db:              db,
+		rootDir:         rootDir,
+		shareMgr:        shareMgr,
+		template:        tplPage,
+		fs:              fs,
+		uploadMaxMemory: maxMemory,
+	}
 }
 
 // GetUserFromCookie reads the JWT sub claim to find the user in O(1).
@@ -238,8 +253,7 @@ func (h *FrontendHandler) userHandler(w http.ResponseWriter, r *http.Request, us
 }
 
 func (h *FrontendHandler) handleUpload(w http.ResponseWriter, r *http.Request, user string, ufs *fs.UserFS) {
-	err := r.ParseMultipartForm(100 << 20)
-	if err != nil {
+	if err := r.ParseMultipartForm(h.uploadMaxMemory); err != nil {
 		log.Printf("Form parse error: %v", err)
 		http.Error(w, "Form parse error: "+err.Error(), http.StatusBadRequest)
 		return
@@ -253,21 +267,18 @@ func (h *FrontendHandler) handleUpload(w http.ResponseWriter, r *http.Request, u
 	}
 	defer file.Close()
 	dstPath := filepath.Join(curPath, header.Filename)
-	err = ufs.WriteFile(dstPath, file, header.Size)
-	if err != nil {
+	if err := ufs.WriteFile(dstPath, file, header.Size); err != nil {
 		log.Printf("File saving error: %v", err)
 		http.Error(w, "Save error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	log.Printf("Form file %s saved to %s", header.Filename, dstPath)
-	redirectURL := "/user/" + curPath
-	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
+	http.Redirect(w, r, "/user/"+curPath, http.StatusSeeOther)
 }
 
 func (h *FrontendHandler) handleMkdir(w http.ResponseWriter, r *http.Request, user string, ufs *fs.UserFS) {
 	ctx := context.Background()
-	err := r.ParseForm()
-	if err != nil {
+	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Form parse error", http.StatusBadRequest)
 		return
 	}
@@ -279,21 +290,18 @@ func (h *FrontendHandler) handleMkdir(w http.ResponseWriter, r *http.Request, us
 		return
 	}
 	fullPath := filepath.Join(curPath, dirname)
-	err = ufs.Mkdir(ctx, fullPath, 0755)
-	if err != nil {
+	if err := ufs.Mkdir(ctx, fullPath, 0755); err != nil {
 		log.Printf("Mkdir error: %v", err)
 		http.Error(w, "Create error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	log.Printf("Directory %s created in %s", dirname, fullPath)
-	redirectURL := "/user/" + curPath
-	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
+	http.Redirect(w, r, "/user/"+curPath, http.StatusSeeOther)
 }
 
 func (h *FrontendHandler) handleDelete(w http.ResponseWriter, r *http.Request, user string, ufs *fs.UserFS) {
 	ctx := context.Background()
-	err := r.ParseForm()
-	if err != nil {
+	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Form parse error", http.StatusBadRequest)
 		return
 	}
@@ -307,8 +315,7 @@ func (h *FrontendHandler) handleDelete(w http.ResponseWriter, r *http.Request, u
 		}
 		log.Printf("File %s removed", path)
 	}
-	redirectURL := "/user/" + curPath
-	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
+	http.Redirect(w, r, "/user/"+curPath, http.StatusSeeOther)
 }
 
 func (h *FrontendHandler) handleLogout(w http.ResponseWriter, r *http.Request, username string) {
@@ -389,10 +396,8 @@ func (h *FrontendHandler) FillCSS() {
 		return
 	}
 	defer f.Close()
-	_, err = f.Write([]byte(CSS))
-	if err != nil {
+	if _, err = f.Write([]byte(CSS)); err != nil {
 		log.Print("CSS filling failed:", err)
-		return
 	}
 }
 

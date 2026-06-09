@@ -2,6 +2,7 @@ package fs
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -80,16 +81,18 @@ func (s *UserFSServer) DiskFree() (int64, error) {
 }
 
 // safeDirSize returns total size of regular files under path.
-// Errors and nil FileInfo entries are silently skipped.
+// Uses fs.WalkDir to avoid the per-entry Lstat call of filepath.Walk.
 func safeDirSize(path string) int64 {
 	var size int64
-	filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
-		if err != nil || info == nil {
+	fs.WalkDir(os.DirFS(path), ".", func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() {
 			return nil
 		}
-		if !info.IsDir() {
-			size += info.Size()
+		info, err := d.Info()
+		if err != nil {
+			return nil
 		}
+		size += info.Size()
 		return nil
 	})
 	return size
