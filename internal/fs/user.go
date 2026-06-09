@@ -50,10 +50,10 @@ func (u *UserFS) resolvePath(name string) (string, error) {
 		return "", fs.ErrInvalid
 	}
 	fullPath := filepath.Join(u.root, cleaned)
-	// Resolve symlinks to prevent path traversal via symlinks
+	// Resolve symlinks to prevent path traversal via symlinks.
 	resolved, err := filepath.EvalSymlinks(fullPath)
 	if err != nil {
-		// File may not exist yet (e.g. WriteFile creating new file) — fall back to lexical check
+		// File may not exist yet (e.g. WriteFile creating new file) — fall back to lexical check.
 		resolved = fullPath
 	}
 	rel, err := filepath.Rel(u.root, resolved)
@@ -64,6 +64,7 @@ func (u *UserFS) resolvePath(name string) (string, error) {
 }
 
 // WriteFile creates or overwrites a file, correctly accounting for quota on overwrite.
+// On io.Copy failure the partially-written file is removed and quota is not updated.
 func (u *UserFS) WriteFile(name string, file io.Reader, sz int64) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -74,7 +75,7 @@ func (u *UserFS) WriteFile(name string, file io.Reader, sz int64) error {
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		return err
 	}
-	// Subtract existing file size from quota before overwrite
+	// Subtract existing file size from quota before overwrite.
 	var oldSize int64
 	if info, err := os.Stat(fullPath); err == nil {
 		oldSize = info.Size()
@@ -89,6 +90,8 @@ func (u *UserFS) WriteFile(name string, file io.Reader, sz int64) error {
 	}
 	defer dstFile.Close()
 	if _, err := io.Copy(dstFile, file); err != nil {
+		// Roll back: remove the partially-written file so disk usage stays consistent.
+		_ = os.Remove(fullPath)
 		return err
 	}
 	u.updateQuotas(netDelta)
@@ -107,7 +110,26 @@ func (u *UserFS) Open(ctx context.Context, path string) (fs.File, error) {
 	return os.Open(fullPath)
 }
 
+// quotaWebDAVFile wraps an os.File opened for writing and enforces quota on each Write.
+type quotaWebDAVFile struct {
+	*os.File
+	ufs *UserFS
+}
+
+func (f *quotaWebDAVFile) Write(p []byte) (int, error) {
+	delta := int64(len(p))
+	if err := f.ufs.CheckQuota(delta); err != nil {
+		return 0, err
+	}
+	n, err := f.File.Write(p)
+	if n > 0 {
+		f.ufs.AddUsage(int64(n))
+	}
+	return n, err
+}
+
 // OpenFile opens a file with the given flags and permissions. Used by WebDAV.
+// Write-mode opens are wrapped with quotaWebDAVFile to enforce quota.
 func (u *UserFS) OpenFile(ctx context.Context, path string, flag int, perm os.FileMode) (webdav.File, error) {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
@@ -116,7 +138,15 @@ func (u *UserFS) OpenFile(ctx context.Context, path string, flag int, perm os.Fi
 		log.Printf("Path %s open error: fs.ErrInvalid", path)
 		return nil, &fs.PathError{Op: "open", Path: path, Err: fs.ErrInvalid}
 	}
-	return os.OpenFile(fullPath, flag, perm)
+	f, err := os.OpenFile(fullPath, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	// Wrap write-mode files to enforce quota per Write call.
+	if flag&(os.O_WRONLY|os.O_RDWR|os.O_APPEND) != 0 {
+		return &quotaWebDAVFile{File: f, ufs: u}, nil
+	}
+	return f, nil
 }
 
 // Create creates or truncates a file for reading and writing. Used by 9P Tcreate.
@@ -190,14 +220,14 @@ func (u *UserFS) Chtimes(ctx context.Context, path string, atime, mtime time.Tim
 }
 
 // CheckQuota returns an error if adding size bytes would exceed the user quota.
-// Used by the 9P quota-enforcing writer.
+// Used by the 9P and WebDAV quota-enforcing writers.
 func (u *UserFS) CheckQuota(size int64) error {
 	return u.checkQuotas(size)
 }
 
 // AddUsage charges delta bytes to the user (and common) quota.
 // Pass a negative delta when freeing space.
-// Used by the 9P quota-enforcing writer.
+// Used by the 9P and WebDAV quota-enforcing writers.
 func (u *UserFS) AddUsage(delta int64) {
 	u.updateQuotas(delta)
 }
@@ -296,7 +326,10 @@ func (u *UserFS) RemoveAll(ctx context.Context, path string) error {
 	return nil
 }
 
+// ReadDir lists directory contents. Protected by RLock to prevent races with RemoveAll.
 func (u *UserFS) ReadDir(path string) ([]fs.DirEntry, error) {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
 	fullPath, err := u.resolvePath(path)
 	if err != nil {
 		return nil, err

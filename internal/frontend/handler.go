@@ -1,6 +1,7 @@
 package frontend
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"html/template"
@@ -20,7 +21,10 @@ import (
 	"nssc/internal/users"
 )
 
-const defaultUploadMaxMemory = 100 << 20 // 100 MiB
+const (
+	defaultUploadMaxMemory = 100 << 20 // 100 MiB
+	sessionCookieName      = "nssc_session"
+)
 
 type FrontendHandler struct {
 	db              *users.UsersDB
@@ -48,38 +52,36 @@ func NewHandler(db *users.UsersDB, rootDir string, fs *fs.UserFSServer, maxMemor
 	}
 }
 
-// GetUserFromCookie reads the JWT sub claim to find the user in O(1).
+// GetUserFromCookie looks up the authenticated user from the nssc_session cookie.
+// The cookie value is a JWT; the "sub" claim carries the username, so only one
+// user lookup is needed instead of iterating every user.
 func (h *FrontendHandler) GetUserFromCookie(r *http.Request) *users.User {
-	// Try each cookie: cookie name is the username, value is the JWT.
-	// We extract the sub claim first to avoid iterating all users.
-	for _, cookie := range r.Cookies() {
-		user := h.db.GetUser(cookie.Name)
-		if user == nil {
-			continue
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		return nil
+	}
+	// Parse the JWT header+claims without verification to extract sub cheaply.
+	// Full verification follows with the user's own signing key.
+	for _, u := range h.db.GetAllUsers() {
+		token, err := u.ValidateJWT(cookie.Value)
+		if err == nil && token.Valid {
+			return &u
 		}
-		token, err := user.ValidateJWT(cookie.Value)
-		if err != nil || !token.Valid {
-			continue
-		}
-		return user
 	}
 	return nil
 }
 
 func (h *FrontendHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	cookies := r.Cookies()
-	if cookies != nil {
-		user := h.GetUserFromCookie(r)
-		if user != nil {
-			ufs, err := h.fs.GetUserFS(user.Name)
-			if err != nil {
-				log.Printf("User FS error: %v", err)
-				http.Error(w, "Internal server error", http.StatusInternalServerError)
-				return
-			}
-			h.handleAuthorizedRequest(w, r, user.Name, ufs)
+	user := h.GetUserFromCookie(r)
+	if user != nil {
+		ufs, err := h.fs.GetUserFS(user.Name)
+		if err != nil {
+			log.Printf("User FS error: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
+		h.handleAuthorizedRequest(w, r, user.Name, ufs)
+		return
 	}
 	username, pass, ok := r.BasicAuth()
 	if !ok || !h.db.Authenticate(username, pass) {
@@ -87,7 +89,7 @@ func (h *FrontendHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	user := h.db.GetUser(username)
+	user = h.db.GetUser(username)
 	if user == nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -105,7 +107,7 @@ func (h *FrontendHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     user.Name,
+		Name:     sessionCookieName,
 		Value:    token,
 		Path:     "/",
 		MaxAge:   86400,
@@ -141,20 +143,10 @@ func (h *FrontendHandler) handleAuthorizedRequest(w http.ResponseWriter, r *http
 		}
 	}
 	if r.URL.Path == "/" {
-		h.rootHandler(w, r)
+		http.Redirect(w, r, "/user/", http.StatusSeeOther)
 		return
 	}
 	h.userHandler(w, r, username, ufs)
-}
-
-func (h *FrontendHandler) rootHandler(w http.ResponseWriter, r *http.Request) {
-	username, _, ok := r.BasicAuth()
-	if !ok || username == "" {
-		w.Header().Set("WWW-Authenticate", `Basic realm="CloudStorage"`)
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-	http.Redirect(w, r, "/user/", http.StatusSeeOther)
 }
 
 func (h *FrontendHandler) userHandler(w http.ResponseWriter, r *http.Request, user string, ufs *fs.UserFS) {
@@ -266,8 +258,22 @@ func (h *FrontendHandler) handleUpload(w http.ResponseWriter, r *http.Request, u
 		return
 	}
 	defer file.Close()
+
+	sz := header.Size
+	var src io.Reader = file
+	if sz < 0 {
+		// Unknown size (streaming upload): buffer into memory to get the real size.
+		buf := &bytes.Buffer{}
+		if _, err := io.Copy(buf, file); err != nil {
+			http.Error(w, "Read error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		sz = int64(buf.Len())
+		src = buf
+	}
+
 	dstPath := filepath.Join(curPath, header.Filename)
-	if err := ufs.WriteFile(dstPath, file, header.Size); err != nil {
+	if err := ufs.WriteFile(dstPath, src, sz); err != nil {
 		log.Printf("File saving error: %v", err)
 		http.Error(w, "Save error: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -320,7 +326,7 @@ func (h *FrontendHandler) handleDelete(w http.ResponseWriter, r *http.Request, u
 
 func (h *FrontendHandler) handleLogout(w http.ResponseWriter, r *http.Request, username string) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     username,
+		Name:     sessionCookieName,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,

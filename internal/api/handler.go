@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -130,7 +131,9 @@ func (h *APIHandler) listDirectory(w http.ResponseWriter, path string, ufs *fs.U
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("listDirectory encode error: %v", err)
+	}
 }
 
 func (h *APIHandler) handlePost(w http.ResponseWriter, r *http.Request, ctx context.Context, path string, ufs *fs.UserFS) {
@@ -154,10 +157,12 @@ func (h *APIHandler) createDirectory(w http.ResponseWriter, ctx context.Context,
 	}
 
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{
+	if err := json.NewEncoder(w).Encode(map[string]string{
 		"status": "created",
 		"path":   path,
-	})
+	}); err != nil {
+		log.Printf("createDirectory encode error: %v", err)
+	}
 }
 
 func (h *APIHandler) handlePut(w http.ResponseWriter, r *http.Request, ctx context.Context, path string, ufs *fs.UserFS) {
@@ -170,10 +175,12 @@ func (h *APIHandler) handlePut(w http.ResponseWriter, r *http.Request, ctx conte
 	}
 
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{
+	if err := json.NewEncoder(w).Encode(map[string]string{
 		"status": "uploaded",
 		"path":   path,
-	})
+	}); err != nil {
+		log.Printf("handlePut encode error: %v", err)
+	}
 }
 
 func (h *APIHandler) handleDelete(w http.ResponseWriter, r *http.Request, ctx context.Context, path string, ufs *fs.UserFS) {
@@ -198,26 +205,34 @@ func (h *APIHandler) createShare(w http.ResponseWriter, ctx context.Context, pat
 		return
 	}
 
-	json.NewEncoder(w).Encode(map[string]string{
+	if err := json.NewEncoder(w).Encode(map[string]string{
 		"share_url": "/public/" + linkID,
-	})
+	}); err != nil {
+		log.Printf("createShare encode error: %v", err)
+	}
 }
 
 func sendJSONError(w http.ResponseWriter, message string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"error": map[string]interface{}{
 			"code":    code,
 			"message": message,
 		},
-	})
+	}); err != nil {
+		log.Printf("sendJSONError encode error: %v", err)
+	}
 }
 
+// getMimeType returns the MIME type for a file by extension,
+// falling back to application/octet-stream for unknown types.
 func getMimeType(info os.FileInfo) string {
 	if info.IsDir() {
 		return "inode/directory"
 	}
-	// TODO: http.DetectContentType()
+	if t := mime.TypeByExtension(filepath.Ext(info.Name())); t != "" {
+		return t
+	}
 	return "application/octet-stream"
 }

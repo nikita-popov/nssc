@@ -49,6 +49,7 @@ func (db *UsersDB) SetRoot(path string) {
 	db.Root = path
 }
 
+// Save writes the DB to path atomically (write-to-tmp + rename) with 0600 permissions.
 func (db *UsersDB) Save(path string) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -57,7 +58,11 @@ func (db *UsersDB) Save(path string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func generateRandomBytes(n int) ([]byte, error) {
@@ -119,53 +124,49 @@ func (db *UsersDB) AddUser(name, password, quota string) error {
 	return nil
 }
 
+// Authenticate checks name/password without holding the mutex during bcrypt.
 func (db *UsersDB) Authenticate(name, password string) bool {
+	// Copy the hash under the lock, then compare outside to avoid holding
+	// the mutex for the full bcrypt duration (~100 ms).
 	db.mu.Lock()
-	defer db.mu.Unlock()
-
+	var hash string
 	for _, u := range db.Users {
 		if u.Name == name {
-			err := bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(password))
-			if err != nil {
-				log.Printf("[Authenticate] Password mismatch for user %s: %v", name, err)
-				return false
-			}
-			return true
+			hash = u.Password
+			break
 		}
 	}
-	log.Printf("[Authenticate] User %s not found", name)
-	return false
+	db.mu.Unlock()
+
+	if hash == "" {
+		log.Printf("[Authenticate] User %s not found", name)
+		return false
+	}
+	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	if err != nil {
+		log.Printf("[Authenticate] Password mismatch for user %s: %v", name, err)
+		return false
+	}
+	return true
 }
 
+// GetUser returns a copy of the User struct to avoid dangling pointers
+// after a slice reallocation triggered by AddUser.
 func (db *UsersDB) GetUser(name string) *User {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-
-	for i := range db.Users {
-		if db.Users[i].Name == name {
-			return &db.Users[i]
-		}
-	}
-	log.Printf("[GetUser] User %s not found", name)
-	return nil
-}
-
-func (db *UsersDB) GetUserKey(name string) (string, error) {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
 	for _, u := range db.Users {
 		if u.Name == name {
-			return u.Key, nil
+			cp := u
+			return &cp
 		}
 	}
-	return "", errors.New("user not found")
+	return nil
 }
 
 func (db *UsersDB) GetUsers() ([]string, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-
 	var res []string
 	for _, user := range db.Users {
 		res = append(res, user.Name)
@@ -178,15 +179,14 @@ func (u *User) GenerateJWT() (string, error) {
 		"sub": u.Name,
 		"exp": time.Now().Add(24 * time.Hour).Unix(),
 	}
-
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(u.Key))
 }
 
-func (u *User) ValidateJWT(tokenString string) (*jwt.Token, error) {
-	return jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+func (u *User) ValidateJWT(tokenStr string) (*jwt.Token, error) {
+	return jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, jwt.ErrSignatureInvalid
+			return nil, errors.New("unexpected signing method")
 		}
 		return []byte(u.Key), nil
 	})
