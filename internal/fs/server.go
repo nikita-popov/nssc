@@ -1,5 +1,3 @@
-//go:build !windows
-
 package fs
 
 import (
@@ -73,7 +71,6 @@ func (s *UserFSServer) checkCommonQuota(size int64) error {
 }
 
 // DiskFree returns free bytes on the filesystem hosting root.
-// Only available on Linux/macOS (build tag !windows).
 func (s *UserFSServer) DiskFree() (int64, error) {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(s.root, &stat); err != nil {
