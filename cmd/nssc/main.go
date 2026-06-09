@@ -53,25 +53,25 @@ func runServer(args []string) {
 		log.Fatalf("run: storage directory %q not found or not a directory", rootDir)
 	}
 
-	db := users.NewUsersDB()
+	db := &users.UsersDB{}
 	if err := db.Load(filepath.Join(rootDir, "db.json")); err != nil {
 		log.Fatalf("run: failed to load users database: %v", err)
 	}
 
-	ufss, err := fs.NewUserFSServer(db, rootDir)
+	ufss, err := fs.NewUserFSServer(rootDir, nil, db.Users)
 	if err != nil {
 		log.Fatalf("run: failed to init user FS: %v", err)
 	}
 
 	mux := http.NewServeMux()
 
-	apiHandler := api.NewAPIHandler(db, ufss)
+	apiHandler := api.NewHandler(db, rootDir, ufss)
 	mux.Handle("/api/", http.StripPrefix("/api", apiHandler))
 
-	webdavHandler := webdav.NewWebDAVHandler(db, ufss)
+	webdavHandler := webdav.NewHandler(db, rootDir, ufss)
 	mux.Handle("/webdav/", webdavHandler)
 
-	frontendHandler := frontend.NewFrontendHandler(db, ufss, rootDir)
+	frontendHandler := frontend.NewHandler(db, rootDir, ufss)
 	mux.Handle("/", frontendHandler)
 
 	if *ninepAddr != "" {
@@ -102,7 +102,7 @@ func addUser(args []string) {
 		quota = args[2]
 	}
 
-	db := users.NewUsersDB()
+	db := &users.UsersDB{}
 	dbPath := filepath.Join(rootDir, "db.json")
 	_ = db.Load(dbPath)
 	db.SetRoot(dbPath)
@@ -134,6 +134,10 @@ func addUser(args []string) {
 	userDir := filepath.Join(rootDir, "user", username)
 	if err := os.MkdirAll(userDir, 0o700); err != nil {
 		log.Fatalf("adduser: failed to create user directory: %v", err)
+	}
+
+	if err := db.Save(dbPath); err != nil {
+		log.Fatalf("adduser: failed to save database: %v", err)
 	}
 
 	log.Printf("adduser: user %q added successfully", username)
