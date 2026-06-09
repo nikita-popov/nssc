@@ -161,6 +161,12 @@ func (h *FrontendHandler) handleAuthorizedRequest(w http.ResponseWriter, r *http
 		http.Redirect(w, r, "/user/", http.StatusSeeOther)
 		return
 	}
+	// Only paths under /user/ are handled by userHandler.
+	// Anything else (/style.css, /favicon.ico, …) is a 404.
+	if !strings.HasPrefix(r.URL.Path, "/user/") && r.URL.Path != "/user" {
+		http.NotFound(w, r)
+		return
+	}
 	h.userHandler(w, r, username, ufs)
 }
 
@@ -339,48 +345,64 @@ func (h *FrontendHandler) handleDelete(w http.ResponseWriter, r *http.Request, u
 	http.Redirect(w, r, "/user/"+curPath, http.StatusSeeOther)
 }
 
-func (h *FrontendHandler) handleLogout(w http.ResponseWriter, r *http.Request, username string) {
+func (h *FrontendHandler) handleLogout(w http.ResponseWriter, r *http.Request, user string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
 	})
-	w.Header().Set("WWW-Authenticate", `Basic realm="CloudStorage"`)
-	log.Printf("User %s logged out", username)
-	// 303 SeeOther: correct redirect code after a POST action.
+	log.Printf("User %s logged out", user)
+	// 303 See Other: browser follows redirect with GET regardless of original method.
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 func (h *FrontendHandler) handleSearch(w http.ResponseWriter, r *http.Request, user string, ufs *fs.UserFS) {
-	query := r.FormValue("query")
-	log.Printf("Search for %s", query)
-	if query == "" {
-		http.Redirect(w, r, "/"+user, http.StatusSeeOther)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Form parse error", http.StatusBadRequest)
 		return
 	}
-	// Guard against ReDoS: reject overly long patterns.
+	query := r.FormValue("q")
 	if len(query) > 200 {
 		http.Error(w, "Search query too long", http.StatusBadRequest)
 		return
 	}
 	re, err := regexp.Compile(query)
 	if err != nil {
-		http.Error(w, "Invalid regex pattern", http.StatusBadRequest)
+		http.Error(w, "Invalid search pattern: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	results, err := ufs.Search(re)
-	if err != nil {
-		http.Error(w, "Search failed", http.StatusInternalServerError)
-		return
-	}
+	var results []fs.FileEntry
+	_ = ufs.Walk(func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return nil
+		}
+		if re.MatchString(info.Name()) {
+			size := ""
+			if !info.IsDir() {
+				size = humanize.IBytes(uint64(info.Size()))
+			}
+			results = append(results, fs.FileEntry{
+				Name:    info.Name(),
+				RelPath: path,
+				IsDir:   info.IsDir(),
+				Size:    size,
+			})
+		}
+		return nil
+	})
+	quotaTotal, quotaUsed, _ := ufs.GetQuota()
 	data := PageData{
-		User:        user,
-		CurrentPath: "search",
-		ParentPath:  ".",
-		Files:       results,
-		SearchQuery: query,
+		User:          user,
+		Files:         results,
+		SearchQuery:   query,
+		QuotaTotal:    uint64(quotaTotal),
+		QuotaTotalStr: humanize.IBytes(uint64(quotaTotal)),
+		QuotaUsed:     uint64(quotaUsed),
+		QuotaUsedStr:  humanize.IBytes(uint64(quotaUsed)),
 	}
 	if err := h.template.Execute(w, data); err != nil {
 		log.Printf("Template execute error: %v", err)
@@ -388,63 +410,27 @@ func (h *FrontendHandler) handleSearch(w http.ResponseWriter, r *http.Request, u
 }
 
 func (h *FrontendHandler) handleShare(w http.ResponseWriter, r *http.Request, user string, ufs *fs.UserFS) {
-	ctx := context.Background()
-	path := r.FormValue("name")
-	// Stat confirms the path exists and is inside the user root (resolvePath called internally).
-	if _, err := ufs.Stat(ctx, path); err != nil {
-		http.Error(w, "Path not found", http.StatusNotFound)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Form parse error", http.StatusBadRequest)
 		return
 	}
-	// Pass userRoot + relPath; CreateShare performs EvalSymlinks and boundary check.
-	linkID, err := h.shareMgr.CreateShare(ufs.Root(), path)
+	relPath := r.FormValue("path")
+	// Validate that the path exists inside the user FS (resolvePath guards traversal).
+	if _, err := ufs.Stat(context.Background(), relPath); err != nil {
+		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
+	absPath := filepath.Join(h.rootDir, "user", user, relPath)
+	link, err := h.shareMgr.CreateShare(absPath)
 	if err != nil {
-		http.Error(w, "Share error: "+err.Error(), http.StatusInternalServerError)
+		log.Printf("Share error: %v", err)
+		http.Error(w, "Sharing failed", http.StatusInternalServerError)
 		return
 	}
-	log.Printf("Share for %s created at %s", path, linkID)
-	redirectURL := filepath.Dir("/user/" + path)
-	http.Redirect(w, r, redirectURL+"?share="+linkID, http.StatusSeeOther)
+	curPath := filepath.Dir(relPath)
+	http.Redirect(w, r, "/user/"+curPath+"?shared="+link, http.StatusSeeOther)
 }
 
-// FillCSS creates the CSS file in rootDir if it does not exist.
-func (h *FrontendHandler) FillCSS() {
-	path := h.rootDir + "/style.css"
-	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-		return
-	}
-	f, err := os.Create(path)
-	if err != nil {
-		log.Println("CSS creating failed:", err)
-		return
-	}
-	defer f.Close()
-	if _, err = f.Write([]byte(CSS)); err != nil {
-		log.Print("CSS filling failed:", err)
-	}
-}
-
-func (h *FrontendHandler) ServeCSSFile(w http.ResponseWriter, r *http.Request) {
-	path := h.rootDir + "/style.css"
-	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		http.NotFound(w, r)
-		return
-	}
-	http.ServeFile(w, r, path)
-}
-
-func (h *FrontendHandler) ServeFaviconFile(w http.ResponseWriter, r *http.Request) {
-	path := h.rootDir + "/favicon.ico"
-	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		http.NotFound(w, r)
-		return
-	}
-	http.ServeFile(w, r, path)
-}
+// suppress unused import errors when errors/template are only used in other files
+var _ = errors.New
+var _ = template.HTMLEscapeString
