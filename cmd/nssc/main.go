@@ -7,13 +7,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-
-	//"aqwari.net/net/styx"
+	"strings"
 
 	"nssc/internal/api"
 	"nssc/internal/frontend"
 	"nssc/internal/fs"
-	//"nssc/internal/ninep"
 	"nssc/internal/users"
 	"nssc/internal/webdav"
 )
@@ -35,6 +33,11 @@ func main() {
 		username := os.Args[3]
 		quota := os.Args[4]
 
+		// Validate rootDir exists
+		if _, err := os.Stat(rootDir); err != nil {
+			log.Fatalf("rootDir %q does not exist: %v", rootDir, err)
+		}
+
 		dbPath := filepath.Join(rootDir, "db.json")
 		var db users.UsersDB
 		if err := db.Load(dbPath); err != nil {
@@ -47,31 +50,41 @@ func main() {
 		if err != nil {
 			log.Fatal("Password reading error:", err)
 		}
+		password = strings.TrimRight(password, "\r\n")
 		fmt.Print("Repeat password: ")
 		tmp, err := reader.ReadString('\n')
 		if err != nil {
 			log.Fatal("Password reading error:", err)
 		}
+		tmp = strings.TrimRight(tmp, "\r\n")
 		if tmp != password {
 			log.Fatal("Passwords mismatch")
 		}
 		if err := db.AddUser(username, password, quota); err != nil {
 			log.Fatal("Add user error:", err)
 		}
+		// Create user directory immediately so it exists before first server start
+		userDir := filepath.Join(rootDir, "user", username)
+		if err := os.MkdirAll(userDir, 0755); err != nil {
+			log.Fatalf("Failed to create user directory: %v", err)
+		}
 		if err := db.Save(dbPath); err != nil {
 			log.Fatal("Save DB error:", err)
 		}
 		fmt.Printf("User %s added successfully\n", username)
 	case "run":
-		var (
-			//styxServer styx.Server
-			ufss *fs.UserFSServer
-		)
+		var ufss *fs.UserFSServer
 		if len(os.Args) != 4 {
 			log.Fatal("Usage: run <host> <rootDir>")
 		}
 		host := os.Args[2]
 		rootDir := os.Args[3]
+
+		// Validate rootDir exists
+		if _, err := os.Stat(rootDir); err != nil {
+			log.Fatalf("rootDir %q does not exist: %v", rootDir, err)
+		}
+
 		dbPath := filepath.Join(rootDir, "db.json")
 		var db users.UsersDB
 		if err := db.Load(dbPath); err != nil {
@@ -79,24 +92,18 @@ func main() {
 		}
 		log.Printf("Users loaded: %d", len(db.Users))
 		db.SetRoot(rootDir)
-		err := os.MkdirAll(filepath.Join(rootDir, "user"), 0755)
-		if err != nil {
+		if err := os.MkdirAll(filepath.Join(rootDir, "user"), 0755); err != nil {
 			log.Fatalf("Failed to create users dir: %v", err)
 		}
-		err = os.MkdirAll(filepath.Join(rootDir, "public"), 0755)
-		if err != nil {
+		if err := os.MkdirAll(filepath.Join(rootDir, "public"), 0755); err != nil {
 			log.Fatalf("Failed to create public dir: %v", err)
 		}
-		mainQuota := fs.NewQuota(0) // TODO
-		ufss, _ = fs.NewUserFSServer(filepath.Join(rootDir, "user"), mainQuota, db.Users)
-
-		/*go func() {
-			srv := ninep.NewServer(&db, rootDir)
-			styxServer.Addr = ":564"
-			//styxServer.Auth = srv.authFunc()
-			styxServer.Handler = styx.Stack(srv)
-			styxServer.ListenAndServe()
-		}()*/
+		mainQuota := fs.NewQuota(0) // 0 = unlimited
+		var err error
+		ufss, err = fs.NewUserFSServer(filepath.Join(rootDir, "user"), mainQuota, db.Users)
+		if err != nil {
+			log.Fatalf("Failed to init user FS: %v", err)
+		}
 
 		frontendHandler := frontend.NewHandler(&db, rootDir, ufss)
 		frontendHandler.FillCSS()
