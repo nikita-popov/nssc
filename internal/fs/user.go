@@ -118,6 +118,93 @@ func (u *UserFS) OpenFile(ctx context.Context, path string, flag int, perm os.Fi
 	return os.OpenFile(fullPath, flag, perm)
 }
 
+// Create opens or creates a file for writing, with the given permissions.
+// Used by 9P Tcreate handler.
+func (u *UserFS) Create(ctx context.Context, path string, perm os.FileMode) (*os.File, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	fullPath, err := u.resolvePath(path)
+	if err != nil {
+		return nil, &fs.PathError{Op: "create", Path: path, Err: fs.ErrInvalid}
+	}
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(fullPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, perm)
+}
+
+// Remove removes a single file or empty directory.
+// Used by 9P Tremove handler.
+func (u *UserFS) Remove(ctx context.Context, path string) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	fullPath, err := u.resolvePath(path)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		return err
+	}
+	size := info.Size()
+	if err := os.Remove(fullPath); err != nil {
+		return err
+	}
+	u.updateQuotas(-size)
+	return nil
+}
+
+// Truncate truncates a file to the given size.
+// Used by 9P Ttruncate handler.
+func (u *UserFS) Truncate(ctx context.Context, path string, size int64) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	fullPath, err := u.resolvePath(path)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		return err
+	}
+	delta := size - info.Size()
+	if delta > 0 {
+		if err := u.checkQuotas(delta); err != nil {
+			return err
+		}
+	}
+	if err := os.Truncate(fullPath, size); err != nil {
+		return err
+	}
+	u.updateQuotas(delta)
+	return nil
+}
+
+// Chtimes updates access and modification times of a file.
+// Used by 9P Tutimes handler.
+func (u *UserFS) Chtimes(ctx context.Context, path string, atime, mtime interface{ IsZero() bool }) error {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	fullPath, err := u.resolvePath(path)
+	if err != nil {
+		return err
+	}
+	return os.Chtimes(fullPath, os.Chtimes_atime(atime), os.Chtimes_mtime(mtime))
+}
+
+// CheckQuota returns an error if adding size bytes would exceed the user quota.
+// Used by the 9P quota-enforcing writer.
+func (u *UserFS) CheckQuota(size int64) error {
+	return u.checkQuotas(size)
+}
+
+// AddUsage charges delta bytes to the user (and common) quota.
+// Pass a negative delta when freeing space.
+// Used by the 9P quota-enforcing writer.
+func (u *UserFS) AddUsage(delta int64) {
+	u.updateQuotas(delta)
+}
+
 // For fs.StatFS interface
 func (u *UserFS) Stat(ctx context.Context, name string) (fs.FileInfo, error) {
 	u.mu.RLock()

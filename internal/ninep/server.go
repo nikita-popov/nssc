@@ -65,9 +65,9 @@ func (s *Server) authFunc() styx.AuthFunc {
 
 // Serve9P handles a single 9P session for the authenticated user.
 func (srv *Server) Serve9P(s *styx.Session) {
-	ufs := srv.fsSrv.GetUserFS(s.User)
-	if ufs == nil {
-		log.Printf("9P: no filesystem for user %q", s.User)
+	ufs, err := srv.fsSrv.GetUserFS(s.User)
+	if err != nil {
+		log.Printf("9P: no filesystem for user %q: %v", s.User, err)
 		return
 	}
 
@@ -93,7 +93,6 @@ func (srv *Server) Serve9P(s *styx.Session) {
 				msg.Ropen(nil, err)
 				continue
 			}
-			// Wrap writes with quota enforcement.
 			if msg.Flag&os.O_WRONLY != 0 || msg.Flag&os.O_RDWR != 0 {
 				msg.Ropen(newQuotaWriter(f, ufs), nil)
 			} else {
@@ -119,7 +118,7 @@ func (srv *Server) Serve9P(s *styx.Session) {
 
 		case styx.Tutimes:
 			p := cleanPath(msg.Path())
-			msg.Rutimes(ufs.Chtimes(ctx, p, time.Time{}, time.Time{}))
+			msg.Rutimes(ufs.Chtimes(ctx, p, msg.Atime, msg.Mtime))
 
 		default:
 			log.Printf("9P: unhandled %T path=%s", msg, msg.Path())
@@ -135,7 +134,7 @@ func cleanPath(p string) string {
 }
 
 // quotaWriter wraps an io.ReadWriteCloser and charges written bytes to the
-// user quota.  If the quota is exceeded the write is rejected and the file
+// user quota. If the quota is exceeded the write is rejected and the file
 // is closed.
 type quotaWriter struct {
 	inner io.ReadWriteCloser
@@ -150,8 +149,7 @@ func (qw *quotaWriter) Read(p []byte) (int, error)  { return qw.inner.Read(p) }
 func (qw *quotaWriter) Close() error                { return qw.inner.Close() }
 
 func (qw *quotaWriter) Write(p []byte) (int, error) {
-	n := int64(len(p))
-	if err := qw.ufs.CheckQuota(n); err != nil {
+	if err := qw.ufs.CheckQuota(int64(len(p))); err != nil {
 		qw.inner.Close()
 		return 0, fs.ErrPermission
 	}
@@ -161,3 +159,9 @@ func (qw *quotaWriter) Write(p []byte) (int, error) {
 	}
 	return written, err
 }
+
+// Ensure quotaWriter satisfies io.ReadWriteCloser at compile time.
+var _ io.ReadWriteCloser = (*quotaWriter)(nil)
+
+// Tutimes time values — styx passes time.Time directly.
+var _ = time.Time{}
