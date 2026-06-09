@@ -9,9 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	//"aqwari.net/net/styx"
+
 	"nssc/internal/api"
 	"nssc/internal/frontend"
 	"nssc/internal/fs"
+	//"nssc/internal/ninep"
 	"nssc/internal/users"
 	"nssc/internal/webdav"
 )
@@ -33,9 +36,8 @@ func main() {
 		username := os.Args[3]
 		quota := os.Args[4]
 
-		// Validate rootDir exists
 		if _, err := os.Stat(rootDir); err != nil {
-			log.Fatalf("rootDir %q does not exist: %v", rootDir, err)
+			log.Fatalf("rootDir does not exist: %v", err)
 		}
 
 		dbPath := filepath.Join(rootDir, "db.json")
@@ -63,7 +65,6 @@ func main() {
 		if err := db.AddUser(username, password, quota); err != nil {
 			log.Fatal("Add user error:", err)
 		}
-		// Create user directory immediately so it exists before first server start
 		userDir := filepath.Join(rootDir, "user", username)
 		if err := os.MkdirAll(userDir, 0755); err != nil {
 			log.Fatalf("Failed to create user directory: %v", err)
@@ -80,9 +81,8 @@ func main() {
 		host := os.Args[2]
 		rootDir := os.Args[3]
 
-		// Validate rootDir exists
 		if _, err := os.Stat(rootDir); err != nil {
-			log.Fatalf("rootDir %q does not exist: %v", rootDir, err)
+			log.Fatalf("rootDir does not exist: %v", err)
 		}
 
 		dbPath := filepath.Join(rootDir, "db.json")
@@ -98,12 +98,19 @@ func main() {
 		if err := os.MkdirAll(filepath.Join(rootDir, "public"), 0755); err != nil {
 			log.Fatalf("Failed to create public dir: %v", err)
 		}
-		mainQuota := fs.NewQuota(0) // 0 = unlimited
+		mainQuota := fs.NewQuota(0) // TODO
 		var err error
 		ufss, err = fs.NewUserFSServer(filepath.Join(rootDir, "user"), mainQuota, db.Users)
 		if err != nil {
 			log.Fatalf("Failed to init user FS: %v", err)
 		}
+
+		/*go func() {
+			srv := ninep.NewServer(&db, rootDir)
+			styxServer.Addr = ":564"
+			styxServer.Handler = styx.Stack(srv)
+			styxServer.ListenAndServe()
+		}()*/
 
 		frontendHandler := frontend.NewHandler(&db, rootDir, ufss)
 		frontendHandler.FillCSS()
@@ -116,7 +123,7 @@ func main() {
 		mux.Handle("/", frontendHandler)
 		mux.HandleFunc("/style.css", frontendHandler.ServeCSSFile)
 		mux.HandleFunc("/favicon.ico", frontendHandler.ServeFaviconFile)
-		mux.Handle("/api/", http.StripPrefix("/api", apiHandler))
+		mux.Handle("/api/", http.StripPrefix("/api/", apiHandler))
 		mux.Handle("/public/", publicHandler)
 		mux.Handle("/webdav/", webdavHandler)
 
