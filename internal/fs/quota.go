@@ -4,7 +4,7 @@ import (
 	"sync"
 )
 
-// Quota tracks disk usage against a total limit.
+// Represents the FS quota
 type Quota struct {
 	total  int64
 	used   int64
@@ -12,6 +12,7 @@ type Quota struct {
 	mu     sync.Mutex
 }
 
+// Creates a new quota
 func NewQuota(total int64) *Quota {
 	return &Quota{
 		total:  total,
@@ -20,21 +21,21 @@ func NewQuota(total int64) *Quota {
 	}
 }
 
-// Remain returns remaining bytes. Thread-safe.
+// Return remaining quota
 func (q *Quota) Remain() int64 {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return q.remain
 }
 
-// Used returns used bytes. Thread-safe.
+// Return used quota
 func (q *Quota) Used() int64 {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return q.used
 }
 
-// calculateRemain must be called with q.mu held.
+// Calculate remain quota (must be called with mu held)
 func (q *Quota) calculateRemain() {
 	if q.total == 0 {
 		return
@@ -45,6 +46,7 @@ func (q *Quota) calculateRemain() {
 	}
 }
 
+// Update total size
 func (q *Quota) SetTotal(total int64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -55,6 +57,7 @@ func (q *Quota) SetTotal(total int64) {
 	q.calculateRemain()
 }
 
+// Update used size
 func (q *Quota) SetUsed(used int64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -82,7 +85,7 @@ func (q *Quota) AddUsage(delta int64) {
 	q.calculateRemain()
 }
 
-// Values returns (total, used, remain) atomically.
+// Return current quota data
 func (q *Quota) Values() (total, used, remain int64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()

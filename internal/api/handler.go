@@ -34,11 +34,10 @@ func NewHandler(db *users.UsersDB, rootDir string, fs *fs.UserFSServer) *APIHand
 }
 
 func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// r.URL.Path is already stripped of "/api" prefix by http.StripPrefix in main.
-	// Path format: /<username>[/<file-path>]
-	fullPath := strings.TrimPrefix(r.URL.Path, "/")
+	// path already stripped of /api/ prefix by http.StripPrefix in main.go
+	fullPath := r.URL.Path
 	parts := strings.SplitN(fullPath, "/", 2)
-	if len(parts) < 1 || parts[0] == "" {
+	if len(parts) < 1 {
 		sendJSONError(w, "Invalid request path", http.StatusBadRequest)
 		return
 	}
@@ -65,7 +64,7 @@ func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ufs, err := h.fs.GetUserFS(user.Name)
 	if err != nil {
 		log.Printf("User FS error: %s", err)
-		sendJSONError(w, "FS error", http.StatusInternalServerError)
+		sendJSONError(w, "FS error", http.StatusBadRequest)
 		return
 	}
 
@@ -92,32 +91,33 @@ func (h *APIHandler) handleGet(w http.ResponseWriter, r *http.Request, ctx conte
 	}
 
 	if info.IsDir() {
-		h.listDirectory(w, ctx, path, ufs)
+		h.listDirectory(w, path, ufs)
 		return
 	}
 
 	f, err := ufs.Open(ctx, path)
 	if err != nil {
-		sendJSONError(w, "Failed to open file", http.StatusInternalServerError)
+		sendJSONError(w, "Cannot open file", http.StatusInternalServerError)
 		return
 	}
 	defer f.Close()
 	http.ServeContent(w, r, info.Name(), info.ModTime(), f.(interface {
-		io.ReadSeeker
+		Read([]byte) (int, error)
+		Seek(int64, int) (int64, error)
 	}))
 }
 
-func (h *APIHandler) listDirectory(w http.ResponseWriter, ctx context.Context, path string, ufs *fs.UserFS) {
+func (h *APIHandler) listDirectory(w http.ResponseWriter, path string, ufs *fs.UserFS) {
 	entries, err := ufs.ReadDir(path)
 	if err != nil {
 		sendJSONError(w, "Failed to read directory", http.StatusInternalServerError)
 		return
 	}
 
-	response := make([]map[string]interface{}, 0, len(entries))
+	response := make([]map[string]interface{}, 0)
 	for _, entry := range entries {
-		info, err := entry.Info()
-		if err != nil {
+		info, _ := entry.Info()
+		if info == nil {
 			continue
 		}
 		response = append(response, map[string]interface{}{
@@ -138,10 +138,12 @@ func (h *APIHandler) handlePost(w http.ResponseWriter, r *http.Request, ctx cont
 		h.createDirectory(w, ctx, path, ufs)
 		return
 	}
+
 	if r.URL.Query().Get("share") != "" {
 		h.createShare(w, ctx, path, ufs)
 		return
 	}
+
 	sendJSONError(w, "Invalid operation", http.StatusBadRequest)
 }
 
@@ -150,6 +152,7 @@ func (h *APIHandler) createDirectory(w http.ResponseWriter, ctx context.Context,
 		sendJSONError(w, "Directory creation failed", http.StatusInternalServerError)
 		return
 	}
+
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{
 		"status": "created",
@@ -159,11 +162,13 @@ func (h *APIHandler) createDirectory(w http.ResponseWriter, ctx context.Context,
 
 func (h *APIHandler) handlePut(w http.ResponseWriter, r *http.Request, ctx context.Context, path string, ufs *fs.UserFS) {
 	defer r.Body.Close()
+
 	if err := ufs.WriteFile(path, r.Body, r.ContentLength); err != nil {
 		log.Printf("handlePut WriteFile error: %v", err)
-		sendJSONError(w, "Upload failed: "+err.Error(), http.StatusInternalServerError)
+		sendJSONError(w, "Upload failed", http.StatusInternalServerError)
 		return
 	}
+
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{
 		"status": "uploaded",
@@ -176,21 +181,23 @@ func (h *APIHandler) handleDelete(w http.ResponseWriter, r *http.Request, ctx co
 		sendJSONError(w, "Deletion failed", http.StatusInternalServerError)
 		return
 	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *APIHandler) createShare(w http.ResponseWriter, ctx context.Context, path string, ufs *fs.UserFS) {
-	// Validate path exists and is inside user's root before sharing.
+	// Validate path exists inside user FS before sharing
 	if _, err := ufs.Stat(ctx, path); err != nil {
-		sendJSONError(w, "File not found", http.StatusNotFound)
+		sendJSONError(w, "Path not found", http.StatusNotFound)
 		return
 	}
-	absPath := filepath.Join(ufs.Root(), filepath.Clean("/"+path))
+	absPath := filepath.Join(ufs.Root(), path)
 	linkID, err := h.shareMgr.CreateShare(absPath)
 	if err != nil {
 		sendJSONError(w, "Sharing failed", http.StatusInternalServerError)
 		return
 	}
+
 	json.NewEncoder(w).Encode(map[string]string{
 		"share_url": "/public/" + linkID,
 	})

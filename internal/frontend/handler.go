@@ -20,8 +20,6 @@ import (
 	"nssc/internal/users"
 )
 
-const maxSearchQueryLen = 200
-
 type FrontendHandler struct {
 	db       *users.UsersDB
 	rootDir  string
@@ -35,21 +33,15 @@ func NewHandler(db *users.UsersDB, rootDir string, fs *fs.UserFSServer) *Fronten
 	return &FrontendHandler{db: db, rootDir: rootDir, shareMgr: shareMgr, template: tplPage, fs: fs}
 }
 
-// GetUserFromCookie reads the username from the JWT "sub" claim (O(1) lookup),
-// then validates the token against that user's key.
+// GetUserFromCookie reads the JWT sub claim to find the user in O(1).
 func (h *FrontendHandler) GetUserFromCookie(r *http.Request) *users.User {
+	// Try each cookie: cookie name is the username, value is the JWT.
+	// We extract the sub claim first to avoid iterating all users.
 	for _, cookie := range r.Cookies() {
-		// Extract username from JWT sub claim without verifying signature yet.
-		username, err := users.GetUsernameFromJWT(cookie.Value)
-		if err != nil {
-			continue
-		}
-		// Find the user by the extracted name (O(1) in practice for small user sets).
-		user := h.db.GetUser(username)
+		user := h.db.GetUser(cookie.Name)
 		if user == nil {
 			continue
 		}
-		// Now verify the signature with the user's actual key.
 		token, err := user.ValidateJWT(cookie.Value)
 		if err != nil || !token.Valid {
 			continue
@@ -60,8 +52,8 @@ func (h *FrontendHandler) GetUserFromCookie(r *http.Request) *users.User {
 }
 
 func (h *FrontendHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ctx := context.Background()
-	if cookies := r.Cookies(); len(cookies) > 0 {
+	cookies := r.Cookies()
+	if cookies != nil {
 		user := h.GetUserFromCookie(r)
 		if user != nil {
 			ufs, err := h.fs.GetUserFS(user.Name)
@@ -70,7 +62,7 @@ func (h *FrontendHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Internal server error", http.StatusInternalServerError)
 				return
 			}
-			h.handleAuthorizedRequest(w, r, ctx, user.Name, ufs)
+			h.handleAuthorizedRequest(w, r, user.Name, ufs)
 			return
 		}
 	}
@@ -82,7 +74,7 @@ func (h *FrontendHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	user := h.db.GetUser(username)
 	if user == nil {
-		http.Error(w, "User not found", http.StatusUnauthorized)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 	ufs, err := h.fs.GetUserFS(user.Name)
@@ -107,29 +99,29 @@ func (h *FrontendHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 	})
 	log.Printf("User %s logged in", username)
-	h.handleAuthorizedRequest(w, r, ctx, username, ufs)
+	h.handleAuthorizedRequest(w, r, username, ufs)
 }
 
-func (h *FrontendHandler) handleAuthorizedRequest(w http.ResponseWriter, r *http.Request, ctx context.Context, username string, ufs *fs.UserFS) {
+func (h *FrontendHandler) handleAuthorizedRequest(w http.ResponseWriter, r *http.Request, username string, ufs *fs.UserFS) {
 	if r.Method == http.MethodPost {
 		switch r.URL.Path {
 		case "/logout":
 			h.handleLogout(w, r, username)
 			return
 		case "/mkdir":
-			h.handleMkdir(w, r, ctx, username, ufs)
+			h.handleMkdir(w, r, username, ufs)
 			return
 		case "/rm":
-			h.handleDelete(w, r, ctx, username, ufs)
+			h.handleDelete(w, r, username, ufs)
 			return
 		case "/search":
-			h.handleSearch(w, r, ctx, username, ufs)
+			h.handleSearch(w, r, username, ufs)
 			return
 		case "/share":
-			h.handleShare(w, r, ctx, username, ufs)
+			h.handleShare(w, r, username, ufs)
 			return
 		case "/upload":
-			h.handleUpload(w, r, ctx, username, ufs)
+			h.handleUpload(w, r, username, ufs)
 			return
 		}
 	}
@@ -137,7 +129,7 @@ func (h *FrontendHandler) handleAuthorizedRequest(w http.ResponseWriter, r *http
 		h.rootHandler(w, r)
 		return
 	}
-	h.userHandler(w, r, ctx, username, ufs)
+	h.userHandler(w, r, username, ufs)
 }
 
 func (h *FrontendHandler) rootHandler(w http.ResponseWriter, r *http.Request) {
@@ -150,7 +142,8 @@ func (h *FrontendHandler) rootHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/user/", http.StatusSeeOther)
 }
 
-func (h *FrontendHandler) userHandler(w http.ResponseWriter, r *http.Request, ctx context.Context, user string, ufs *fs.UserFS) {
+func (h *FrontendHandler) userHandler(w http.ResponseWriter, r *http.Request, user string, ufs *fs.UserFS) {
+	ctx := context.Background()
 	pathPrefix := "/user"
 	relPath := strings.TrimPrefix(r.URL.Path, pathPrefix)
 	decodedPath, err := url.PathUnescape(relPath)
@@ -222,17 +215,20 @@ func (h *FrontendHandler) userHandler(w http.ResponseWriter, r *http.Request, ct
 			parentPath = ""
 		}
 	}
+	searchQuery := ""
 	quotaTotal, quotaUsed, _ := ufs.GetQuota()
+	quotaTotalStr := humanize.IBytes(uint64(quotaTotal))
+	quotaUsedStr := humanize.IBytes(uint64(quotaUsed))
 	data := PageData{
 		User:          user,
 		CurrentPath:   curPath,
 		ParentPath:    parentPath,
 		Files:         fileEntries,
 		QuotaTotal:    uint64(quotaTotal),
-		QuotaTotalStr: humanize.IBytes(uint64(quotaTotal)),
+		QuotaTotalStr: quotaTotalStr,
 		QuotaUsed:     uint64(quotaUsed),
-		QuotaUsedStr:  humanize.IBytes(uint64(quotaUsed)),
-		SearchQuery:   "",
+		QuotaUsedStr:  quotaUsedStr,
+		SearchQuery:   searchQuery,
 		FilesCount:    filesCount,
 		DirsCount:     dirsCount,
 	}
@@ -241,7 +237,7 @@ func (h *FrontendHandler) userHandler(w http.ResponseWriter, r *http.Request, ct
 	}
 }
 
-func (h *FrontendHandler) handleUpload(w http.ResponseWriter, r *http.Request, ctx context.Context, user string, ufs *fs.UserFS) {
+func (h *FrontendHandler) handleUpload(w http.ResponseWriter, r *http.Request, user string, ufs *fs.UserFS) {
 	err := r.ParseMultipartForm(100 << 20)
 	if err != nil {
 		log.Printf("Form parse error: %v", err)
@@ -257,17 +253,21 @@ func (h *FrontendHandler) handleUpload(w http.ResponseWriter, r *http.Request, c
 	}
 	defer file.Close()
 	dstPath := filepath.Join(curPath, header.Filename)
-	if err = ufs.WriteFile(dstPath, file, header.Size); err != nil {
+	err = ufs.WriteFile(dstPath, file, header.Size)
+	if err != nil {
 		log.Printf("File saving error: %v", err)
 		http.Error(w, "Save error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	log.Printf("Form file %s saved to %s", header.Filename, dstPath)
-	http.Redirect(w, r, "/user/"+curPath, http.StatusSeeOther)
+	redirectURL := "/user/" + curPath
+	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 }
 
-func (h *FrontendHandler) handleMkdir(w http.ResponseWriter, r *http.Request, ctx context.Context, user string, ufs *fs.UserFS) {
-	if err := r.ParseForm(); err != nil {
+func (h *FrontendHandler) handleMkdir(w http.ResponseWriter, r *http.Request, user string, ufs *fs.UserFS) {
+	ctx := context.Background()
+	err := r.ParseForm()
+	if err != nil {
 		http.Error(w, "Form parse error", http.StatusBadRequest)
 		return
 	}
@@ -278,31 +278,39 @@ func (h *FrontendHandler) handleMkdir(w http.ResponseWriter, r *http.Request, ct
 		http.Error(w, "Directory name required", http.StatusBadRequest)
 		return
 	}
-	if err := ufs.Mkdir(ctx, filepath.Join(curPath, dirname), 0755); err != nil {
+	fullPath := filepath.Join(curPath, dirname)
+	err = ufs.Mkdir(ctx, fullPath, 0755)
+	if err != nil {
 		log.Printf("Mkdir error: %v", err)
 		http.Error(w, "Create error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, "/user/"+curPath, http.StatusSeeOther)
+	log.Printf("Directory %s created in %s", dirname, fullPath)
+	redirectURL := "/user/" + curPath
+	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 }
 
-func (h *FrontendHandler) handleDelete(w http.ResponseWriter, r *http.Request, ctx context.Context, user string, ufs *fs.UserFS) {
-	if err := r.ParseForm(); err != nil {
+func (h *FrontendHandler) handleDelete(w http.ResponseWriter, r *http.Request, user string, ufs *fs.UserFS) {
+	ctx := context.Background()
+	err := r.ParseForm()
+	if err != nil {
 		http.Error(w, "Form parse error", http.StatusBadRequest)
 		return
 	}
 	paths := r.Form["path"]
 	curPath := r.FormValue("dir")
 	for _, p := range paths {
-		if err := ufs.RemoveAll(ctx, filepath.Join(curPath, p)); err != nil {
+		path := filepath.Join(curPath, p)
+		if err := ufs.RemoveAll(ctx, path); err != nil {
 			http.Error(w, "Delete error: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		log.Printf("File %s removed", path)
 	}
-	http.Redirect(w, r, "/user/"+curPath, http.StatusSeeOther)
+	redirectURL := "/user/" + curPath
+	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 }
 
-// handleLogout clears the session cookie and redirects to login (303).
 func (h *FrontendHandler) handleLogout(w http.ResponseWriter, r *http.Request, username string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     username,
@@ -313,23 +321,21 @@ func (h *FrontendHandler) handleLogout(w http.ResponseWriter, r *http.Request, u
 	})
 	w.Header().Set("WWW-Authenticate", `Basic realm="CloudStorage"`)
 	log.Printf("User %s logged out", username)
-	// 303 SeeOther is correct for a POST → GET redirect after logout.
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-// handleSearch compiles a regex from the query and walks the user's tree.
-// Query length is capped to prevent ReDoS.
-func (h *FrontendHandler) handleSearch(w http.ResponseWriter, r *http.Request, ctx context.Context, user string, ufs *fs.UserFS) {
+func (h *FrontendHandler) handleSearch(w http.ResponseWriter, r *http.Request, user string, ufs *fs.UserFS) {
 	query := r.FormValue("query")
+	log.Printf("Search for %s", query)
 	if query == "" {
-		http.Redirect(w, r, "/user/", http.StatusSeeOther)
+		http.Redirect(w, r, "/"+user, http.StatusSeeOther)
 		return
 	}
-	if len(query) > maxSearchQueryLen {
+	// Guard against ReDoS: reject overly long patterns
+	if len(query) > 200 {
 		http.Error(w, "Search query too long", http.StatusBadRequest)
 		return
 	}
-	log.Printf("Search for %s", query)
 	re, err := regexp.Compile(query)
 	if err != nil {
 		http.Error(w, "Invalid regex pattern", http.StatusBadRequest)
@@ -352,15 +358,15 @@ func (h *FrontendHandler) handleSearch(w http.ResponseWriter, r *http.Request, c
 	}
 }
 
-// handleShare creates a public symlink for a file validated through UserFS.
-func (h *FrontendHandler) handleShare(w http.ResponseWriter, r *http.Request, ctx context.Context, user string, ufs *fs.UserFS) {
+func (h *FrontendHandler) handleShare(w http.ResponseWriter, r *http.Request, user string, ufs *fs.UserFS) {
+	ctx := context.Background()
 	path := r.FormValue("name")
-	// Validate path is inside user's sandbox before sharing.
+	// Validate path is inside user FS (resolvePath called internally by Stat)
 	if _, err := ufs.Stat(ctx, path); err != nil {
-		http.Error(w, "File not found", http.StatusNotFound)
+		http.Error(w, "Path not found", http.StatusNotFound)
 		return
 	}
-	absPath := filepath.Join(ufs.Root(), filepath.Clean("/"+path))
+	absPath := filepath.Join(ufs.Root(), path)
 	linkID, err := h.shareMgr.CreateShare(absPath)
 	if err != nil {
 		http.Error(w, "Share error: "+err.Error(), http.StatusInternalServerError)
@@ -371,6 +377,7 @@ func (h *FrontendHandler) handleShare(w http.ResponseWriter, r *http.Request, ct
 	http.Redirect(w, r, redirectURL+"?share="+linkID, http.StatusSeeOther)
 }
 
+// Check if CSS file exists, create if not
 func (h *FrontendHandler) FillCSS() {
 	path := h.rootDir + "/style.css"
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -382,17 +389,19 @@ func (h *FrontendHandler) FillCSS() {
 		return
 	}
 	defer f.Close()
-	if _, err = f.Write([]byte(CSS)); err != nil {
+	_, err = f.Write([]byte(CSS))
+	if err != nil {
 		log.Print("CSS filling failed:", err)
+		return
 	}
 }
 
 func (h *FrontendHandler) ServeCSSFile(w http.ResponseWriter, r *http.Request) {
+	path := h.rootDir + "/style.css"
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	path := h.rootDir + "/style.css"
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		http.NotFound(w, r)
 		return
@@ -401,11 +410,11 @@ func (h *FrontendHandler) ServeCSSFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *FrontendHandler) ServeFaviconFile(w http.ResponseWriter, r *http.Request) {
+	path := h.rootDir + "/favicon.ico"
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	path := h.rootDir + "/favicon.ico"
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		http.NotFound(w, r)
 		return

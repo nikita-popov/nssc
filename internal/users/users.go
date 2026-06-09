@@ -1,26 +1,24 @@
 package users
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"crypto/rand"
-	"encoding/hex"
 	"log"
 	"os"
 	"sync"
 	"time"
 
+	"crypto/rand"
+
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
-// User represents a single user account.
-// Salt field removed: bcrypt embeds a random salt inside the hash itself.
 type User struct {
 	Name     string `json:"name"`
-	Password string `json:"password"` // bcrypt hash (salt embedded)
-	Key      string `json:"key"`      // random 256-bit key for JWT signing
+	Password string `json:"password"` // bcrypt hash (bcrypt stores its own salt)
+	Key      string `json:"key"`      // random key for JWT signing
 	Quota    string `json:"quota"`    // quota string like "1GiB"
 }
 
@@ -45,7 +43,6 @@ func (db *UsersDB) Load(path string) error {
 	return json.Unmarshal(data, db)
 }
 
-// SetRoot sets the root directory for the database (no error to return).
 func (db *UsersDB) SetRoot(path string) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -72,7 +69,6 @@ func generateRandomBytes(n int) ([]byte, error) {
 	return b, nil
 }
 
-// hashPassword hashes password using bcrypt (salt is embedded in the hash).
 func hashPassword(password string) (string, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
@@ -141,7 +137,6 @@ func (db *UsersDB) Authenticate(name, password string) bool {
 	return false
 }
 
-// GetUser returns a pointer to the actual User element in the slice (not a copy).
 func (db *UsersDB) GetUser(name string) *User {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -167,12 +162,11 @@ func (db *UsersDB) GetUserKey(name string) (string, error) {
 	return "", errors.New("user not found")
 }
 
-// GetUsers returns a list of all usernames. Protected by mutex.
 func (db *UsersDB) GetUsers() ([]string, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	res := make([]string, 0, len(db.Users))
+	var res []string
 	for _, user := range db.Users {
 		res = append(res, user.Name)
 	}
@@ -184,6 +178,7 @@ func (u *User) GenerateJWT() (string, error) {
 		"sub": u.Name,
 		"exp": time.Now().Add(24 * time.Hour).Unix(),
 	}
+
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(u.Key))
 }
@@ -195,23 +190,4 @@ func (u *User) ValidateJWT(tokenString string) (*jwt.Token, error) {
 		}
 		return []byte(u.Key), nil
 	})
-}
-
-// GetUsernameFromJWT extracts the "sub" claim from a raw JWT string
-// without verifying the signature (used for user lookup before key retrieval).
-func GetUsernameFromJWT(tokenString string) (string, error) {
-	parser := jwt.NewParser(jwt.WithoutClaimsValidation())
-	token, _, err := parser.ParseUnverified(tokenString, jwt.MapClaims{})
-	if err != nil {
-		return "", fmt.Errorf("parse JWT: %w", err)
-	}
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok {
-		return "", errors.New("invalid JWT claims")
-	}
-	sub, ok := claims["sub"].(string)
-	if !ok || sub == "" {
-		return "", errors.New("missing sub claim")
-	}
-	return sub, nil
 }
