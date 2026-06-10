@@ -38,10 +38,10 @@ clean:
 	$(GO) clean -v
 	rm -rf $(REPO)/bin
 
-adduser:
+adduser: build
 	@echo "Usage: make adduser ROOT=path USER=username PASS=password QUOTA=1GiB"
-	$(GO) run $(CMD_DIR)/main.go adduser $(ROOT) $(USER) $(PASS) $(QUOTA)
+	./bin/nssc adduser $(ROOT) $(USER) $(PASS) $(QUOTA)
 
 # make server HOST=127.0.0.1:8080 ROOT=/srv/nssc/
 server: build
-	./bin/$(APP_NAME) run $(HOST) $(ROOT)
+	./bin/nssc run -p $(HOST) $(ROOT)
