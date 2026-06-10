@@ -4,6 +4,23 @@ import (
 	"html/template"
 )
 
+// PageData holds all data passed to the HTML template.
+type PageData struct {
+	User          string
+	CurrentPath   string
+	ParentPath    string
+	Files         interface{}
+	QuotaTotal    uint64
+	QuotaTotalStr string
+	QuotaUsed     uint64
+	QuotaUsedStr  string
+	SearchQuery   string
+	FilesCount    int
+	DirsCount     int
+	// Version is the build-time version string injected via -ldflags.
+	Version string
+}
+
 var tplPage = template.Must(template.New("index").Parse(`
 <!DOCTYPE html>
 <html lang="en">
@@ -109,8 +126,8 @@ var tplPage = template.Must(template.New("index").Parse(`
 </div>
 
 <footer>
-Powered by nssc
-<footer>
+Powered by nssc {{ .Version }}
+</footer>
 
 </body>
 </html>
