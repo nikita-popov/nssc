@@ -15,15 +15,18 @@ func TestShareManager(t *testing.T) {
 	sm := share.NewShareManager(publicDir)
 
 	t.Run("Create and remove share", func(t *testing.T) {
-		testFile := filepath.Join(os.TempDir(), "test.txt")
+		// userRoot acts as the boundary; testFile is placed directly inside it.
+		userRoot := os.TempDir()
+		testFile := filepath.Join(userRoot, "test.txt")
 		os.WriteFile(testFile, []byte("test"), 0644)
+		defer os.Remove(testFile)
 
-		link, err := sm.CreateShare(testFile)
+		link, err := sm.CreateShare(userRoot, "test.txt")
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		if _, err := os.Stat(filepath.Join(publicDir, link)); err != nil {
+		if _, err := os.Lstat(filepath.Join(publicDir, link)); err != nil {
 			t.Error("Symlink not created")
 		}
 

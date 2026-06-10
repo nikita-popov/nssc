@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dustin/go-humanize"
 
@@ -19,12 +20,11 @@ import (
 
 // UserFS
 type UserFS struct {
-	ctx    context.Context
 	root   string
 	mu     sync.RWMutex
 	tree   fs.FS
 	quota  *Quota
-	server *UserFSServer // TODO: Re-think
+	server *UserFSServer
 }
 
 func NewUserFS(root string, quota *Quota, server *UserFSServer) *UserFS {
@@ -49,15 +49,22 @@ func (u *UserFS) resolvePath(name string) (string, error) {
 	if strings.HasPrefix(cleaned, "..") {
 		return "", fs.ErrInvalid
 	}
-	fullPath := filepath.Join(u.root, name)
-	rel, err := filepath.Rel(u.root, fullPath)
+	fullPath := filepath.Join(u.root, cleaned)
+	// Resolve symlinks to prevent path traversal via symlinks.
+	resolved, err := filepath.EvalSymlinks(fullPath)
+	if err != nil {
+		// File may not exist yet (e.g. WriteFile creating new file) — fall back to lexical check.
+		resolved = fullPath
+	}
+	rel, err := filepath.Rel(u.root, resolved)
 	if err != nil || strings.HasPrefix(rel, "..") {
 		return "", fs.ErrInvalid
 	}
 	return fullPath, nil
 }
 
-// WriteFile create or re-write file
+// WriteFile creates or overwrites a file, correctly accounting for quota on overwrite.
+// On io.Copy failure the partially-written file is removed and quota is not updated.
 func (u *UserFS) WriteFile(name string, file io.Reader, sz int64) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -68,7 +75,13 @@ func (u *UserFS) WriteFile(name string, file io.Reader, sz int64) error {
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		return err
 	}
-	if err := u.checkQuotas(sz); err != nil {
+	// Subtract existing file size from quota before overwrite.
+	var oldSize int64
+	if info, err := os.Stat(fullPath); err == nil {
+		oldSize = info.Size()
+	}
+	netDelta := sz - oldSize
+	if err := u.checkQuotas(netDelta); err != nil {
 		return err
 	}
 	dstFile, err := os.Create(fullPath)
@@ -77,13 +90,15 @@ func (u *UserFS) WriteFile(name string, file io.Reader, sz int64) error {
 	}
 	defer dstFile.Close()
 	if _, err := io.Copy(dstFile, file); err != nil {
+		// Roll back: remove the partially-written file so disk usage stays consistent.
+		_ = os.Remove(fullPath)
 		return err
 	}
-	u.updateQuotas(sz)
+	u.updateQuotas(netDelta)
 	return nil
 }
 
-// For fs.FS interface
+// Open opens a file for reading. Implements fs.FS.
 func (u *UserFS) Open(ctx context.Context, path string) (fs.File, error) {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
@@ -95,7 +110,26 @@ func (u *UserFS) Open(ctx context.Context, path string) (fs.File, error) {
 	return os.Open(fullPath)
 }
 
-// For fs.FS WebDAV interface
+// quotaWebDAVFile wraps an os.File opened for writing and enforces quota on each Write.
+type quotaWebDAVFile struct {
+	*os.File
+	ufs *UserFS
+}
+
+func (f *quotaWebDAVFile) Write(p []byte) (int, error) {
+	delta := int64(len(p))
+	if err := f.ufs.CheckQuota(delta); err != nil {
+		return 0, err
+	}
+	n, err := f.File.Write(p)
+	if n > 0 {
+		f.ufs.AddUsage(int64(n))
+	}
+	return n, err
+}
+
+// OpenFile opens a file with the given flags and permissions. Used by WebDAV.
+// Write-mode opens are wrapped with quotaWebDAVFile to enforce quota.
 func (u *UserFS) OpenFile(ctx context.Context, path string, flag int, perm os.FileMode) (webdav.File, error) {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
@@ -104,18 +138,101 @@ func (u *UserFS) OpenFile(ctx context.Context, path string, flag int, perm os.Fi
 		log.Printf("Path %s open error: fs.ErrInvalid", path)
 		return nil, &fs.PathError{Op: "open", Path: path, Err: fs.ErrInvalid}
 	}
-	/* TODO:
-	if flag&os.O_WRONLY != 0 || flag&os.O_RDWR != 0 || flag&os.O_APPEND != 0 {
-		if fs.quota > 0 {
-			if currentUsage := fs.getCurrentUsage(); currentUsage >= fs.quota {
-				return nil, webdav.ErrLocked
-			}
-		}
-	}*/
-	return os.OpenFile(fullPath, flag, perm)
+	f, err := os.OpenFile(fullPath, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	// Wrap write-mode files to enforce quota per Write call.
+	if flag&(os.O_WRONLY|os.O_RDWR|os.O_APPEND) != 0 {
+		return &quotaWebDAVFile{File: f, ufs: u}, nil
+	}
+	return f, nil
 }
 
-// For fs.StatFS interface
+// Create creates or truncates a file for reading and writing. Used by 9P Tcreate.
+func (u *UserFS) Create(ctx context.Context, path string, perm os.FileMode) (*os.File, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	fullPath, err := u.resolvePath(path)
+	if err != nil {
+		return nil, &fs.PathError{Op: "create", Path: path, Err: fs.ErrInvalid}
+	}
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(fullPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, perm)
+}
+
+// Remove removes a single file or empty directory. Used by 9P Tremove.
+func (u *UserFS) Remove(ctx context.Context, path string) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	fullPath, err := u.resolvePath(path)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		return err
+	}
+	size := info.Size()
+	if err := os.Remove(fullPath); err != nil {
+		return err
+	}
+	u.updateQuotas(-size)
+	return nil
+}
+
+// Truncate truncates a file to the given size. Used by 9P Ttruncate.
+func (u *UserFS) Truncate(ctx context.Context, path string, size int64) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	fullPath, err := u.resolvePath(path)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		return err
+	}
+	delta := size - info.Size()
+	if delta > 0 {
+		if err := u.checkQuotas(delta); err != nil {
+			return err
+		}
+	}
+	if err := os.Truncate(fullPath, size); err != nil {
+		return err
+	}
+	u.updateQuotas(delta)
+	return nil
+}
+
+// Chtimes updates access and modification times of a file. Used by 9P Tutimes.
+func (u *UserFS) Chtimes(ctx context.Context, path string, atime, mtime time.Time) error {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	fullPath, err := u.resolvePath(path)
+	if err != nil {
+		return err
+	}
+	return os.Chtimes(fullPath, atime, mtime)
+}
+
+// CheckQuota returns an error if adding size bytes would exceed the user quota.
+// Used by the 9P and WebDAV quota-enforcing writers.
+func (u *UserFS) CheckQuota(size int64) error {
+	return u.checkQuotas(size)
+}
+
+// AddUsage charges delta bytes to the user (and common) quota.
+// Pass a negative delta when freeing space.
+// Used by the 9P and WebDAV quota-enforcing writers.
+func (u *UserFS) AddUsage(delta int64) {
+	u.updateQuotas(delta)
+}
+
+// Stat returns file info. Implements fs.StatFS.
 func (u *UserFS) Stat(ctx context.Context, name string) (fs.FileInfo, error) {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
@@ -181,7 +298,7 @@ func (u *UserFS) Rename(ctx context.Context, oldName, newName string) error {
 	return os.Rename(oldPath, newPath)
 }
 
-// Remove everything at path
+// RemoveAll removes a file or directory tree.
 func (u *UserFS) RemoveAll(ctx context.Context, path string) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -209,7 +326,10 @@ func (u *UserFS) RemoveAll(ctx context.Context, path string) error {
 	return nil
 }
 
+// ReadDir lists directory contents. Protected by RLock to prevent races with RemoveAll.
 func (u *UserFS) ReadDir(path string) ([]fs.DirEntry, error) {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
 	fullPath, err := u.resolvePath(path)
 	if err != nil {
 		return nil, err
@@ -217,19 +337,28 @@ func (u *UserFS) ReadDir(path string) ([]fs.DirEntry, error) {
 	return os.ReadDir(fullPath)
 }
 
+// Search walks the user root and returns entries whose names match re.
+// Uses fs.WalkDir to avoid the per-entry Lstat call of filepath.Walk.
 func (u *UserFS) Search(re *regexp.Regexp) ([]FileEntry, error) {
 	var results []FileEntry
-	filepath.Walk(u.root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
+	fs.WalkDir(os.DirFS(u.root), ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil {
 			return nil
 		}
-		relPath, _ := filepath.Rel(u.root, path)
-		if re.MatchString(info.Name()) {
+		if re.MatchString(d.Name()) {
+			info, err := d.Info()
+			if err != nil {
+				return nil
+			}
+			size := ""
+			if !d.IsDir() {
+				size = humanize.Bytes(uint64(info.Size()))
+			}
 			results = append(results, FileEntry{
-				Name:    info.Name(),
-				RelPath: relPath,
-				IsDir:   info.IsDir(),
-				Size:    humanize.Bytes(uint64(info.Size())),
+				Name:    d.Name(),
+				RelPath: path,
+				IsDir:   d.IsDir(),
+				Size:    size,
 				ModTime: info.ModTime().Format("2006-01-02 15:04:05"),
 			})
 		}
@@ -238,12 +367,19 @@ func (u *UserFS) Search(re *regexp.Regexp) ([]FileEntry, error) {
 	return results, nil
 }
 
+// calculateDirSize returns the total size of regular files under path.
+// Uses fs.WalkDir to avoid the per-entry Lstat call of filepath.Walk.
 func (u *UserFS) calculateDirSize(path string) int64 {
 	var size int64
-	filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
-		if !info.IsDir() {
-			size += info.Size()
+	fs.WalkDir(os.DirFS(path), ".", func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() {
+			return nil
 		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		size += info.Size()
 		return nil
 	})
 	return size

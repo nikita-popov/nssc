@@ -1,261 +1,170 @@
+// Package ninep provides a 9P2000 file server backed by UserFSServer.
+// Each session is authenticated against UsersDB and served from the
+// corresponding per-user directory with quota enforcement.
 package ninep
 
 import (
 	"context"
 	"errors"
+	"io"
+	"io/fs"
 	"log"
 	"net"
-	//"os"
+	"os"
 	"path"
-	//"path/filepath"
-	//"strings"
-	"sync"
 
 	"aqwari.net/net/styx"
-	//"aqwari.net/net/styx/styxauth"
+	fsinternal "nssc/internal/fs"
 	"nssc/internal/users"
 )
 
-type UserFS struct {
-	userRoot string
-	quota    int64
-	mu       sync.Mutex
-}
-
+// Server listens for 9P connections and dispatches sessions per user.
 type Server struct {
-	listener net.Listener
-	usersDB  *users.UsersDB
-	rootDir  string
-	//fsCache  *sync.Map // map[string]*UserFS
-	fs  map[string]*UserFS
-	ctx context.Context
+	usersDB *users.UsersDB
+	fsSrv   *fsinternal.UserFSServer
 }
 
-func NewServer(usersDB *users.UsersDB, rootDir string) *Server {
+// NewServer creates a 9P server that authenticates against usersDB and
+// serves files through fsSrv.
+func NewServer(usersDB *users.UsersDB, fsSrv *fsinternal.UserFSServer) *Server {
 	return &Server{
 		usersDB: usersDB,
-		rootDir: rootDir,
-		//fsCache: &sync.Map{},
+		fsSrv:   fsSrv,
 	}
 }
 
-/*func (s *Server) Start(addr string) error {
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		return err
+// ListenAndServe starts a 9P listener on addr (e.g. ":564" or
+// "unix:///run/nssc.sock"). It blocks until the server fails.
+func (s *Server) ListenAndServe(addr string) error {
+	srv := &styx.Server{
+		Addr:    addr,
+		Handler: s,
+		Auth:    s.authFunc(),
 	}
-	s.listener = listener
+	return srv.ListenAndServe()
+}
 
-	server := styx.Server{
-		Auth: s.authFunc(),
-		Handler: styx.HandlerFunc(func(session *styx.Session) {
-			user := session.User()
-			fs, _ := s.fsCache.LoadOrStore(user, &UserFS{
-				userRoot: filepath.Join(s.rootDir, "user", user),
-				quota:    s.usersDB.GetQuota(user),
-			})
-			fs.(*UserFS).Serve9P(session)
-		}),
+// Serve starts a 9P server on an existing listener.
+func (s *Server) Serve(l net.Listener) error {
+	srv := &styx.Server{
+		Handler: s,
+		Auth:    s.authFunc(),
 	}
-
-	go server.Serve(s.listener)
-	return nil
-    }*/
+	return srv.Serve(l)
+}
 
 func (s *Server) authFunc() styx.AuthFunc {
-	return func(_ *styx.Channel, user, access string) error {
-		log.Printf("user: %s, access: %s", user, access)
-		if !s.usersDB.Authenticate(user, access) {
+	return func(_ *styx.Channel, user, password string) error {
+		if !s.usersDB.Authenticate(user, password) {
 			return errors.New("authentication failed")
 		}
 		return nil
 	}
 }
 
+// Serve9P handles a single 9P session for the authenticated user.
 func (srv *Server) Serve9P(s *styx.Session) {
-	//Loop:
+	ufs, err := srv.fsSrv.GetUserFS(s.User)
+	if err != nil {
+		log.Printf("9P: no filesystem for user %q: %v", s.User, err)
+		return
+	}
+
+	ctx := context.Background()
+
 	for s.Next() {
-		msg := s.Request()
-		file := path.Clean(msg.Path())
-		log.Println("Handling: ", file)
+		switch msg := s.Request().(type) {
 
-		// Switch on the kind of message we are receiving, not all will arrive here and are handled by styx
-		// Only every give styx a VFile to ensure it can cast interfaces correctly
-		switch t := msg.(type) {
 		case styx.Twalk:
-			log.Println("=== walk: ", t)
-			//f, err := srv.fs.lookup(*srv, file)
-			//t.Rwalk(f.VF(), err)
-
-		case styx.Topen:
-			log.Println("=== open: ", t)
-			//f, err := srv.userFS.handleWalk(*srv, file)
-			//t.Ropen(f.VF(), err)
+			p := cleanPath(msg.Path())
+			info, err := ufs.Stat(ctx, p)
+			msg.Rwalk(info, err)
 
 		case styx.Tstat:
-			log.Println("=== stat: ", t)
-			//f, err := srv.userFS.handleWalk(*srv, file)
-			//t.Rstat(f.VF(), err)
+			p := cleanPath(msg.Path())
+			info, err := ufs.Stat(ctx, p)
+			msg.Rstat(info, err)
+
+		case styx.Topen:
+			p := cleanPath(msg.Path())
+			// fs.File is read-only; writable opens need OpenFile which
+			// returns *os.File (satisfies io.ReadWriteCloser).
+			if msg.Flag&os.O_WRONLY != 0 || msg.Flag&os.O_RDWR != 0 {
+				f, err := ufs.OpenFile(ctx, p, msg.Flag, 0644)
+				if err != nil {
+					msg.Ropen(nil, err)
+					continue
+				}
+				msg.Ropen(newQuotaWriter(f, ufs), nil)
+			} else {
+				f, err := ufs.Open(ctx, p)
+				if err != nil {
+					msg.Ropen(nil, err)
+					continue
+				}
+				msg.Ropen(f, nil)
+			}
 
 		case styx.Tcreate:
-			log.Println("=== create: ", t)
-			// TODO - something special for directories?
-			//full := file + t.Name
-
-			// Insert into file tree
-			//f, err := srv.File.Insert(full, false)
-			//if err != nil {
-			//	t.Rerror("tree insert failed %s", err)
-			//	continue Loop
-			//}
-
-			// Upload to blob storage
-			//err = f.Blob.Upload(srv.ctx)
-			//if err != nil {
-			//	t.Rerror("azure upload failed %s", err)
-			//	continue Loop
-			//}
-
-			//t.Rcreate(f.VF(), nil)
+			p := cleanPath(msg.NewPath())
+			f, err := ufs.Create(ctx, p, msg.Mode)
+			if err != nil {
+				msg.Rcreate(nil, err)
+				continue
+			}
+			msg.Rcreate(newQuotaWriter(f, ufs), nil)
 
 		case styx.Tremove:
-			log.Println("=== rm: ", t)
-			//full := t.Path()
-			//f, err := srv.userFS.lookup(*srv, full)
-
-			//err = srv.File.Delete(full)
-			//if err != nil {
-			//	t.Rerror("azure delete failed %s", err)
-			//}
-
-			//t.Rremove(err)
+			p := cleanPath(msg.Path())
+			msg.Rremove(ufs.Remove(ctx, p))
 
 		case styx.Ttruncate:
-			// TODO
-			log.Println("=== truncate?: ", t)
+			p := cleanPath(msg.Path())
+			msg.Rtruncate(ufs.Truncate(ctx, p, msg.Size))
 
 		case styx.Tutimes:
-			// Change last modified time
-			log.Println("=== utimes?: ", t)
-			// TODO
-			//t.Rutimes(nil)
+			p := cleanPath(msg.Path())
+			msg.Rutimes(ufs.Chtimes(ctx, p, msg.Atime, msg.Mtime))
 
+		default:
+			log.Printf("9P: unhandled %T path=%s", msg, msg.Path())
 		}
 	}
 }
 
-/*func (fs *UserFS) lookup(srv Server, full string) (*File, error) {
-	// Sync root
-	srv.File.Sync()
+// cleanPath normalises a client-supplied path to a relative slash-path.
+// styx delivers absolute paths; stripping the leading slash makes them
+// suitable for UserFS which expects paths relative to the user root.
+func cleanPath(p string) string {
+	return path.Clean("/" + p)[1:]
+}
 
-	cleaned := path.Clean(full)
+// quotaWriter wraps an io.ReadWriteCloser and charges written bytes to the
+// user quota. If the quota is exceeded the write is rejected and the file
+// is closed.
+type quotaWriter struct {
+	inner io.ReadWriteCloser
+	ufs   *fsinternal.UserFS
+}
 
-	// Short circuit base case for root
-	if cleaned == "/" {
-		return srv.File, nil
+func newQuotaWriter(rwc io.ReadWriteCloser, ufs *fsinternal.UserFS) *quotaWriter {
+	return &quotaWriter{inner: rwc, ufs: ufs}
+}
+
+func (qw *quotaWriter) Read(p []byte) (int, error) { return qw.inner.Read(p) }
+func (qw *quotaWriter) Close() error               { return qw.inner.Close() }
+
+func (qw *quotaWriter) Write(p []byte) (int, error) {
+	if err := qw.ufs.CheckQuota(int64(len(p))); err != nil {
+		qw.inner.Close()
+		return 0, fs.ErrPermission
 	}
-
-	f, err := srv.File.Search(cleaned)
-	if f == nil {
-		return srv.File, err
+	written, err := qw.inner.Write(p)
+	if written > 0 {
+		qw.ufs.AddUsage(int64(written))
 	}
-
-	return f, err
+	return written, err
 }
 
-func (fs *UserFS) handleOpen(req styx.Topen, path string) {
-    file, err := os.Open(path)
-    if err != nil {
-        req.Ropen(nil, styx.EIO)
-        return
-    }
-    defer file.Close()
-
-    req.Ropen(styx.OSFile(path), nil)
-}
-
-func (fs *UserFS) handleRead(req styx.Tread, path string) {
-    file, err := os.Open(path)
-    if err != nil {
-        req.Rread(nil, styx.EIO)
-        return
-    }
-    defer file.Close()
-
-    buf := make([]byte, req.Count())
-    n, err := file.ReadAt(buf, req.Offset())
-    if err != nil && err != io.EOF {
-        req.Rread(nil, styx.EIO)
-        return
-    }
-
-    req.Rread(buf[:n], nil)
-}
-
-func (fs *UserFS) handleWrite(req styx.Twrite, path string) {
-    fs.mu.Lock()
-    defer fs.mu.Unlock()
-
-    if fs.quota > 0 {
-        if current := fs.currentUsage(); current+int64(len(req.Data())) > fs.quota {
-            req.Rwrite(0, styx.Enospace)
-            return
-        }
-    }
-
-    file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0644)
-    if err != nil {
-        req.Rwrite(0, styx.EIO)
-        return
-    }
-    defer file.Close()
-
-    n, err := file.WriteAt(req.Data(), req.Offset())
-    if err != nil {
-        req.Rwrite(0, styx.EIO)
-        return
-    }
-
-    req.Rwrite(n, nil)
-}
-
-func (fs *UserFS) handleCreate(req styx.Tcreate, path string) {
-    fs.mu.Lock()
-    defer fs.mu.Unlock()
-
-    if req.Dir() {
-        if err := os.MkdirAll(path, os.FileMode(req.Perm())); err != nil {
-            req.Rcreate(nil, styx.EIO)
-            return
-        }
-    } else {
-        file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL, os.FileMode(req.Perm()))
-        if err != nil {
-            req.Rcreate(nil, styx.Eexist)
-            return
-        }
-        file.Close()
-    }
-
-    req.Rcreate(styx.OSFile(path), nil)
-}
-
-func (fs *UserFS) handleRemove(req styx.Tremove, path string) {
-    if err := os.RemoveAll(path); err != nil {
-        req.Rremove(styx.EIO)
-        return
-    }
-    req.Rremove(nil)
-}
-
-func (fs *UserFS) currentUsage() int64 {
-    var total int64
-    filepath.Walk(fs.userRoot, func(path string, info os.FileInfo, err error) error {
-        if !info.IsDir() {
-            total += info.Size()
-        }
-        return nil
-    })
-    return total
-}
-*/
+// Ensure quotaWriter satisfies io.ReadWriteCloser at compile time.
+var _ io.ReadWriteCloser = (*quotaWriter)(nil)

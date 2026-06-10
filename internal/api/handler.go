@@ -1,9 +1,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
-	"io"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,7 +19,7 @@ import (
 
 type APIHandler struct {
 	db       *users.UsersDB
-	rootDir  string // TODO: remove
+	rootDir  string
 	shareMgr *share.ShareManager
 	fs       *fs.UserFSServer
 }
@@ -34,7 +35,8 @@ func NewHandler(db *users.UsersDB, rootDir string, fs *fs.UserFSServer) *APIHand
 }
 
 func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	fullPath := strings.TrimPrefix(r.URL.Path, "/api/")
+	// path already stripped of /api/ prefix by http.StripPrefix in main.go
+	fullPath := r.URL.Path
 	parts := strings.SplitN(fullPath, "/", 2)
 	if len(parts) < 1 {
 		sendJSONError(w, "Invalid request path", http.StatusBadRequest)
@@ -49,13 +51,17 @@ func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	username, pass, ok := r.BasicAuth()
 	if !ok || username != name || !h.db.Authenticate(username, pass) {
-		log.Printf("User %s unauthorized ", username)
+		log.Printf("User %s unauthorized", username)
 		w.Header().Set("WWW-Authenticate", `Basic realm="CloudStorage"`)
 		sendJSONError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
 	user := h.db.GetUser(username)
+	if user == nil {
+		sendJSONError(w, "User not found", http.StatusUnauthorized)
+		return
+	}
 	ufs, err := h.fs.GetUserFS(user.Name)
 	if err != nil {
 		log.Printf("User FS error: %s", err)
@@ -63,37 +69,47 @@ func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx := context.Background()
 	switch r.Method {
 	case http.MethodGet:
-		h.handleGet(w, r, path, ufs)
+		h.handleGet(w, r, ctx, path, ufs)
 	case http.MethodPost:
-		h.handlePost(w, r, path, ufs)
+		h.handlePost(w, r, ctx, path, ufs)
 	case http.MethodPut:
-		h.handlePut(w, r, path, ufs)
+		h.handlePut(w, r, ctx, path, ufs)
 	case http.MethodDelete:
-		h.handleDelete(w, r, path, ufs)
+		h.handleDelete(w, r, ctx, path, ufs)
 	default:
 		sendJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-func (h *APIHandler) handleGet(w http.ResponseWriter, r *http.Request, absPath string, ufs *fs.UserFS) {
-	info, err := os.Stat(absPath)
+func (h *APIHandler) handleGet(w http.ResponseWriter, r *http.Request, ctx context.Context, path string, ufs *fs.UserFS) {
+	info, err := ufs.Stat(ctx, path)
 	if err != nil {
 		sendJSONError(w, "Resource not found", http.StatusNotFound)
 		return
 	}
 
 	if info.IsDir() {
-		h.listDirectory(w, absPath, ufs)
+		h.listDirectory(w, path, ufs)
 		return
 	}
 
-	http.ServeFile(w, r, absPath)
+	f, err := ufs.Open(ctx, path)
+	if err != nil {
+		sendJSONError(w, "Cannot open file", http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+	http.ServeContent(w, r, info.Name(), info.ModTime(), f.(interface {
+		Read([]byte) (int, error)
+		Seek(int64, int) (int64, error)
+	}))
 }
 
 func (h *APIHandler) listDirectory(w http.ResponseWriter, path string, ufs *fs.UserFS) {
-	entries, err := os.ReadDir(path)
+	entries, err := ufs.ReadDir(path)
 	if err != nil {
 		sendJSONError(w, "Failed to read directory", http.StatusInternalServerError)
 		return
@@ -102,6 +118,9 @@ func (h *APIHandler) listDirectory(w http.ResponseWriter, path string, ufs *fs.U
 	response := make([]map[string]interface{}, 0)
 	for _, entry := range entries {
 		info, _ := entry.Info()
+		if info == nil {
+			continue
+		}
 		response = append(response, map[string]interface{}{
 			"name":      entry.Name(),
 			"size":      info.Size(),
@@ -112,65 +131,60 @@ func (h *APIHandler) listDirectory(w http.ResponseWriter, path string, ufs *fs.U
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("listDirectory encode error: %v", err)
+	}
 }
 
-func (h *APIHandler) handlePost(w http.ResponseWriter, r *http.Request, path string, ufs *fs.UserFS) {
+func (h *APIHandler) handlePost(w http.ResponseWriter, r *http.Request, ctx context.Context, path string, ufs *fs.UserFS) {
 	if r.URL.Query().Get("mkdir") != "" {
-		h.createDirectory(w, path, ufs)
+		h.createDirectory(w, ctx, path, ufs)
 		return
 	}
 
 	if r.URL.Query().Get("share") != "" {
-		h.createShare(w, path)
+		h.createShare(w, ctx, path, ufs)
 		return
 	}
 
 	sendJSONError(w, "Invalid operation", http.StatusBadRequest)
 }
 
-func (h *APIHandler) createDirectory(w http.ResponseWriter, path string, ufs *fs.UserFS) {
-	if err := os.MkdirAll(path, 0750); err != nil {
+func (h *APIHandler) createDirectory(w http.ResponseWriter, ctx context.Context, path string, ufs *fs.UserFS) {
+	if err := ufs.MkdirAll(ctx, path, 0750); err != nil {
 		sendJSONError(w, "Directory creation failed", http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{
+	if err := json.NewEncoder(w).Encode(map[string]string{
 		"status": "created",
 		"path":   path,
-	})
+	}); err != nil {
+		log.Printf("createDirectory encode error: %v", err)
+	}
 }
 
-func (h *APIHandler) handlePut(w http.ResponseWriter, r *http.Request, path string, ufs *fs.UserFS) {
+func (h *APIHandler) handlePut(w http.ResponseWriter, r *http.Request, ctx context.Context, path string, ufs *fs.UserFS) {
 	defer r.Body.Close()
 
-	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
-		sendJSONError(w, "Path creation failed", http.StatusInternalServerError)
-		return
-	}
-
-	file, err := os.Create(path)
-	if err != nil {
-		sendJSONError(w, "File creation failed", http.StatusInternalServerError)
-		return
-	}
-	defer file.Close()
-
-	if _, err := io.Copy(file, r.Body); err != nil {
+	if err := ufs.WriteFile(path, r.Body, r.ContentLength); err != nil {
+		log.Printf("handlePut WriteFile error: %v", err)
 		sendJSONError(w, "Upload failed", http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{
+	if err := json.NewEncoder(w).Encode(map[string]string{
 		"status": "uploaded",
 		"path":   path,
-	})
+	}); err != nil {
+		log.Printf("handlePut encode error: %v", err)
+	}
 }
 
-func (h *APIHandler) handleDelete(w http.ResponseWriter, r *http.Request, path string, ufs *fs.UserFS) {
-	if err := os.RemoveAll(path); err != nil {
+func (h *APIHandler) handleDelete(w http.ResponseWriter, r *http.Request, ctx context.Context, path string, ufs *fs.UserFS) {
+	if err := ufs.RemoveAll(ctx, path); err != nil {
 		sendJSONError(w, "Deletion failed", http.StatusInternalServerError)
 		return
 	}
@@ -178,33 +192,47 @@ func (h *APIHandler) handleDelete(w http.ResponseWriter, r *http.Request, path s
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *APIHandler) createShare(w http.ResponseWriter, path string) {
-	linkID, err := h.shareMgr.CreateShare(path)
+func (h *APIHandler) createShare(w http.ResponseWriter, ctx context.Context, path string, ufs *fs.UserFS) {
+	// Stat confirms the path exists and is inside the user root (resolvePath is called internally).
+	if _, err := ufs.Stat(ctx, path); err != nil {
+		sendJSONError(w, "Path not found", http.StatusNotFound)
+		return
+	}
+	// Pass userRoot + relPath; CreateShare performs EvalSymlinks and boundary check.
+	linkID, err := h.shareMgr.CreateShare(ufs.Root(), path)
 	if err != nil {
 		sendJSONError(w, "Sharing failed", http.StatusInternalServerError)
 		return
 	}
 
-	json.NewEncoder(w).Encode(map[string]string{
+	if err := json.NewEncoder(w).Encode(map[string]string{
 		"share_url": "/public/" + linkID,
-	})
+	}); err != nil {
+		log.Printf("createShare encode error: %v", err)
+	}
 }
 
 func sendJSONError(w http.ResponseWriter, message string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"error": map[string]interface{}{
 			"code":    code,
 			"message": message,
 		},
-	})
+	}); err != nil {
+		log.Printf("sendJSONError encode error: %v", err)
+	}
 }
 
+// getMimeType returns the MIME type for a file by extension,
+// falling back to application/octet-stream for unknown types.
 func getMimeType(info os.FileInfo) string {
 	if info.IsDir() {
 		return "inode/directory"
 	}
-	// TODO: http.DetectContentType()
+	if t := mime.TypeByExtension(filepath.Ext(info.Name())); t != "" {
+		return t
+	}
 	return "application/octet-stream"
 }

@@ -5,14 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 
 	"github.com/dustin/go-humanize"
 
 	"nssc/internal/users"
 )
 
-// Hold all UserFS's
+// UserFSServer holds per-user UserFS instances.
 type UserFSServer struct {
 	root        string
 	commonQuota *Quota
@@ -20,8 +19,9 @@ type UserFSServer struct {
 	mu          sync.RWMutex
 }
 
-// Create new UserFSServer
-func NewUserFSServer(root string, commonQuota *Quota, users []users.User) (*UserFSServer, error) {
+// NewUserFSServer initialises a UserFSServer and per-user directories.
+// Quota usage is calculated inside each UserFS.Init() — no double counting.
+func NewUserFSServer(root string, commonQuota *Quota, userList []users.User) (*UserFSServer, error) {
 	if err := os.MkdirAll(root, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create root directory: %w", err)
 	}
@@ -30,41 +30,31 @@ func NewUserFSServer(root string, commonQuota *Quota, users []users.User) (*User
 		commonQuota: commonQuota,
 		users:       make(map[string]*UserFS),
 	}
-	for _, user := range users {
+	for _, user := range userList {
 		userRoot := filepath.Join(root, user.Name)
 		if err := os.MkdirAll(userRoot, 0755); err != nil {
-			return nil, fmt.Errorf("failed to create user directory: %w", err)
+			return nil, fmt.Errorf("failed to create user directory for %s: %w", user.Name, err)
 		}
-		var used int64
-		filepath.Walk(userRoot, func(path string, info os.FileInfo, err error) error {
-			if !info.IsDir() {
-				used += info.Size()
-			}
-			return nil
-		})
 		quota, err := humanize.ParseBytes(user.Quota)
 		if err != nil {
 			quota = 0
 		}
-		server.users[user.Name] = NewUserFS(
-			userRoot,
-			NewQuota(int64(quota)),
-			server,
-		)
-		server.users[user.Name].Init()
+		ufs := NewUserFS(userRoot, NewQuota(int64(quota)), server)
+		ufs.Init() // calculates initial used space; no pre-Walk needed
+		server.users[user.Name] = ufs
 	}
 	return server, nil
 }
 
-// Return UserFS for username
+// GetUserFS returns the UserFS for the given username.
 func (s *UserFSServer) GetUserFS(username string) (*UserFS, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	fs, ok := s.users[username]
+	ufs, ok := s.users[username]
 	if !ok {
 		return nil, fmt.Errorf("fs for user %s not found", username)
 	}
-	return fs, nil
+	return ufs, nil
 }
 
 func (s *UserFSServer) checkCommonQuota(size int64) error {
@@ -73,17 +63,8 @@ func (s *UserFSServer) checkCommonQuota(size int64) error {
 	if s.commonQuota == nil {
 		return nil
 	}
-
 	if total, _, remain := s.commonQuota.Values(); total > 0 && remain < size {
 		return fmt.Errorf("common quota exceeded: remain %d < need %d", remain, size)
 	}
 	return nil
-}
-
-func (s *UserFSServer) DiskFree() (int64, error) {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(s.root, &stat); err != nil {
-		return 0, err
-	}
-	return int64(stat.Bavail) * int64(stat.Bsize), nil
 }

@@ -1,16 +1,15 @@
 package users
 
 import (
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"sync"
 	"time"
+
+	"crypto/rand"
 
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
@@ -18,8 +17,7 @@ import (
 
 type User struct {
 	Name     string `json:"name"`
-	Password string `json:"password"` // bcrypt hashed password + salt
-	Salt     string `json:"salt"`     // random salt
+	Password string `json:"password"` // bcrypt hash (bcrypt stores its own salt)
 	Key      string `json:"key"`      // random key for JWT signing
 	Quota    string `json:"quota"`    // quota string like "1GiB"
 }
@@ -34,7 +32,7 @@ func (db *UsersDB) Load(path string) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	data, err := ioutil.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			db.Users = []User{}
@@ -45,13 +43,13 @@ func (db *UsersDB) Load(path string) error {
 	return json.Unmarshal(data, db)
 }
 
-func (db *UsersDB) SetRoot(path string) error {
+func (db *UsersDB) SetRoot(path string) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	db.Root = path
-	return nil
 }
 
+// Save writes the DB to path atomically (write-to-tmp + rename) with 0600 permissions.
 func (db *UsersDB) Save(path string) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -60,7 +58,11 @@ func (db *UsersDB) Save(path string) error {
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(path, data, 0644)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func generateRandomBytes(n int) ([]byte, error) {
@@ -72,9 +74,8 @@ func generateRandomBytes(n int) ([]byte, error) {
 	return b, nil
 }
 
-func hashPassword(password, salt string) (string, error) {
-	saltedPassword := password + salt
-	hash, err := bcrypt.GenerateFromPassword([]byte(saltedPassword), bcrypt.DefaultCost)
+func hashPassword(password string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return "", err
 	}
@@ -82,7 +83,7 @@ func hashPassword(password, salt string) (string, error) {
 }
 
 func generateKey() (string, error) {
-	keyBytes, err := generateRandomBytes(32) // 256-bit key
+	keyBytes, err := generateRandomBytes(32)
 	if err != nil {
 		return "", err
 	}
@@ -95,34 +96,26 @@ func (db *UsersDB) AddUser(name, password, quota string) error {
 
 	for _, u := range db.Users {
 		if u.Name == name {
-			fmt.Printf("User %s already exists", name)
+			log.Printf("User %s already exists", name)
 			return errors.New("user already exists")
 		}
 	}
 
-	saltBytes, err := generateRandomBytes(32)
+	hashedPassword, err := hashPassword(password)
 	if err != nil {
-		fmt.Printf("Failed to generate salt: %v", err)
-		return err
-	}
-	salt := hex.EncodeToString(saltBytes)
-
-	hashedPassword, err := hashPassword(password, salt)
-	if err != nil {
-		fmt.Printf("Failed to hash password for user %s: %v", name, err)
+		log.Printf("Failed to hash password for user %s: %v", name, err)
 		return err
 	}
 
 	key, err := generateKey()
 	if err != nil {
-		fmt.Printf("Failed to generate key for user %s: %v", name, err)
+		log.Printf("Failed to generate key for user %s: %v", name, err)
 		return err
 	}
 
 	newUser := User{
 		Name:     name,
 		Password: hashedPassword,
-		Salt:     salt,
 		Key:      key,
 		Quota:    quota,
 	}
@@ -131,53 +124,50 @@ func (db *UsersDB) AddUser(name, password, quota string) error {
 	return nil
 }
 
+// Authenticate checks name/password without holding the mutex during bcrypt.
 func (db *UsersDB) Authenticate(name, password string) bool {
+	// Copy the hash under the lock, then compare outside to avoid holding
+	// the mutex for the full bcrypt duration (~100 ms).
 	db.mu.Lock()
-	defer db.mu.Unlock()
-
+	var hash string
 	for _, u := range db.Users {
 		if u.Name == name {
-			saltedPassword := password + u.Salt
-			err := bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(saltedPassword))
-			if err != nil {
-				log.Printf("[Authenticate] Password mismatch for user %s: %v", name, err)
-				return false
-			}
-			return true
+			hash = u.Password
+			break
 		}
 	}
-	log.Printf("[Authenticate] User %s not found", name)
-	return false
+	db.mu.Unlock()
+
+	if hash == "" {
+		log.Printf("[Authenticate] User %s not found", name)
+		return false
+	}
+	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	if err != nil {
+		log.Printf("[Authenticate] Password mismatch for user %s: %v", name, err)
+		return false
+	}
+	return true
 }
 
+// GetUser returns a copy of the User struct to avoid dangling pointers
+// after a slice reallocation triggered by AddUser.
 func (db *UsersDB) GetUser(name string) *User {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-
 	for _, u := range db.Users {
 		if u.Name == name {
-			return &u
+			cp := u
+			return &cp
 		}
 	}
-	log.Printf("[Authenticate] User %s not found", name)
 	return nil
 }
 
-func (db *UsersDB) GetUserKey(name string) (string, error) {
+func (db *UsersDB) GetUsers() ([]string, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-
-	for _, u := range db.Users {
-		if u.Name == name {
-			return u.Key, nil
-		}
-	}
-	return "", errors.New("user not found")
-}
-
-func (db *UsersDB) GetUsers() ([]string, error) {
 	var res []string
-
 	for _, user := range db.Users {
 		res = append(res, user.Name)
 	}
@@ -189,15 +179,14 @@ func (u *User) GenerateJWT() (string, error) {
 		"sub": u.Name,
 		"exp": time.Now().Add(24 * time.Hour).Unix(),
 	}
-
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(u.Key))
 }
 
-func (u *User) ValidateJWT(tokenString string) (*jwt.Token, error) {
-	return jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+func (u *User) ValidateJWT(tokenStr string) (*jwt.Token, error) {
+	return jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, jwt.ErrSignatureInvalid
+			return nil, errors.New("unexpected signing method")
 		}
 		return []byte(u.Key), nil
 	})

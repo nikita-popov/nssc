@@ -21,17 +21,21 @@ func NewQuota(total int64) *Quota {
 	}
 }
 
-// Return remain quota
+// Return remaining quota
 func (q *Quota) Remain() int64 {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	return q.remain
 }
 
-// Return remain quota
+// Return used quota
 func (q *Quota) Used() int64 {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	return q.used
 }
 
-// Calculate remain quota
+// Calculate remain quota (must be called with mu held)
 func (q *Quota) calculateRemain() {
 	if q.total == 0 {
 		return
