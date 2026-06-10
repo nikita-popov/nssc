@@ -18,10 +18,10 @@ import (
 	"nssc/internal/webdav"
 )
 
-// Version is set at build time via:
+// version is set at build time via:
 //
-//	go build -ldflags "-X main.Version=1.2.3" ./cmd/nssc
-var Version = "dev"
+//	go build -ldflags "-X main.version=1.2.3" ./cmd/nssc
+var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -83,7 +83,7 @@ func runServer(args []string) {
 	webdavHandler := webdav.NewHandler(db, rootDir, ufss)
 	mux.Handle("/webdav/", webdavHandler)
 
-	frontendHandler := frontend.NewHandler(db, rootDir, ufss, Version, 0)
+	frontendHandler := frontend.NewHandler(db, rootDir, ufss, version, 0)
 	mux.Handle("/", frontendHandler)
 
 	if *ninepAddr != "" {

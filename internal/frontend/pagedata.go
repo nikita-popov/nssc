@@ -4,6 +4,7 @@ import (
 	"nssc/internal/fs"
 )
 
+// PageData holds all data passed to the HTML template.
 type PageData struct {
 	User          string
 	CurrentPath   string
@@ -16,4 +17,6 @@ type PageData struct {
 	SearchQuery   string
 	FilesCount    int
 	DirsCount     int
+	// Version is the build-time version string injected via -ldflags "-X main.version=..."
+	Version string
 }
