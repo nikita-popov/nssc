@@ -109,8 +109,8 @@ var tplPage = template.Must(template.New("index").Parse(`
 </div>
 
 <footer>
-Powered by nssc
-<footer>
+Powered by nssc {{ .Version }}
+</footer>
 
 </body>
 </html>

@@ -29,6 +29,7 @@ const (
 type FrontendHandler struct {
 	db              *users.UsersDB
 	rootDir         string
+	version         string
 	shareMgr        *share.ShareManager
 	template        *template.Template
 	fs              *fs.UserFSServer
@@ -36,8 +37,9 @@ type FrontendHandler struct {
 }
 
 // NewHandler creates a FrontendHandler.
+// version is the build-time version string (set via -ldflags "-X main.Version=...").
 // Pass maxMemory > 0 to override the default 100 MiB multipart limit.
-func NewHandler(db *users.UsersDB, rootDir string, fs *fs.UserFSServer, maxMemory int64) *FrontendHandler {
+func NewHandler(db *users.UsersDB, rootDir string, fs *fs.UserFSServer, version string, maxMemory int64) *FrontendHandler {
 	if maxMemory <= 0 {
 		maxMemory = defaultUploadMaxMemory
 	}
@@ -45,6 +47,7 @@ func NewHandler(db *users.UsersDB, rootDir string, fs *fs.UserFSServer, maxMemor
 	return &FrontendHandler{
 		db:              db,
 		rootDir:         rootDir,
+		version:         version,
 		shareMgr:        shareMgr,
 		template:        tplPage,
 		fs:              fs,
@@ -258,6 +261,7 @@ func (h *FrontendHandler) userHandler(w http.ResponseWriter, r *http.Request, us
 		SearchQuery:   searchQuery,
 		FilesCount:    filesCount,
 		DirsCount:     dirsCount,
+		Version:       h.version,
 	}
 	if err := h.template.Execute(w, data); err != nil {
 		log.Printf("Template execute error: %v", err)
@@ -384,6 +388,7 @@ func (h *FrontendHandler) handleSearch(w http.ResponseWriter, r *http.Request, u
 		QuotaTotalStr: humanize.IBytes(uint64(quotaTotal)),
 		QuotaUsed:     uint64(quotaUsed),
 		QuotaUsedStr:  humanize.IBytes(uint64(quotaUsed)),
+		Version:       h.version,
 	}
 	if err := h.template.Execute(w, data); err != nil {
 		log.Printf("Template execute error: %v", err)

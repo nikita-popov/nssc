@@ -18,6 +18,11 @@ import (
 	"nssc/internal/webdav"
 )
 
+// version is set at build time via:
+//
+//	go build -ldflags "-X main.version=1.2.3" ./cmd/nssc
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: %s <command> [options]\n", os.Args[0])
@@ -78,8 +83,7 @@ func runServer(args []string) {
 	webdavHandler := webdav.NewHandler(db, rootDir, ufss)
 	mux.Handle("/webdav/", webdavHandler)
 
-	// 0 = use default 100 MiB multipart memory limit.
-	frontendHandler := frontend.NewHandler(db, rootDir, ufss, 0)
+	frontendHandler := frontend.NewHandler(db, rootDir, ufss, version, 0)
 	mux.Handle("/", frontendHandler)
 
 	if *ninepAddr != "" {
