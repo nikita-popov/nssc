@@ -5,7 +5,6 @@ package ninep
 
 import (
 	"context"
-	"errors"
 	"io"
 	"io/fs"
 	"log"
@@ -36,10 +35,12 @@ func NewServer(usersDB *users.UsersDB, fsSrv *fsinternal.UserFSServer) *Server {
 // ListenAndServe starts a 9P listener on addr (e.g. ":564" or
 // "unix:///run/nssc.sock"). It blocks until the server fails.
 func (s *Server) ListenAndServe(addr string) error {
+	// Auth is deliberately nil: Linux v9fs and plan9port never send Tauth,
+	// so requiring it rejected every standard client with "no such fid".
+	// Credentials are validated in Serve9P from uname/aname instead.
 	srv := &styx.Server{
 		Addr:    addr,
 		Handler: s,
-		Auth:    s.authFunc(),
 	}
 	return srv.ListenAndServe()
 }
@@ -48,22 +49,20 @@ func (s *Server) ListenAndServe(addr string) error {
 func (s *Server) Serve(l net.Listener) error {
 	srv := &styx.Server{
 		Handler: s,
-		Auth:    s.authFunc(),
 	}
 	return srv.Serve(l)
 }
 
-func (s *Server) authFunc() styx.AuthFunc {
-	return func(_ *styx.Channel, user, password string) error {
-		if !s.usersDB.Authenticate(user, password) {
-			return errors.New("authentication failed")
-		}
-		return nil
-	}
-}
-
 // Serve9P handles a single 9P session for the authenticated user.
 func (srv *Server) Serve9P(s *styx.Session) {
+	// uname carries the username and aname the password. Reject before the
+	// session serves anything; the client has already seen Rattach, so a bad
+	// password shows up as a closed session rather than a protocol error.
+	if !srv.usersDB.Authenticate(s.User, s.Access) {
+		log.Printf("9P: authentication failed for user %q", s.User)
+		return
+	}
+
 	ufs, err := srv.fsSrv.GetUserFS(s.User)
 	if err != nil {
 		log.Printf("9P: no filesystem for user %q: %v", s.User, err)

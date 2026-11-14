@@ -229,12 +229,12 @@ nssc run -p :8080 -9p :564 ~/storage/
 #### Mounting on Linux (v9fs)
 
 ```sh
-# TCP
-mount -t 9p -o trans=tcp,port=564,uname=alice,aname=alice,version=9p2000 \
+# TCP. aname carries the password, not the username.
+mount -t 9p -o trans=tcp,port=564,uname=alice,aname="$NSS_PASS",version=9p2000 \
   localhost /mnt/nssc
 
 # Unix socket (requires -9p unix:///run/nssc.sock)
-mount -t 9p -o trans=unix,uname=alice,aname=alice,version=9p2000 \
+mount -t 9p -o trans=unix,uname=alice,aname="$NSS_PASS",version=9p2000 \
   /run/nssc.sock /mnt/nssc
 ```
 
@@ -253,7 +253,14 @@ mount -a tcp!localhost!564 /mnt/nssc
 
 #### Authentication
 
-The 9P server uses the styx `AuthFunc` mechanism. Pass the username as `uname` and the password as the `aname` field, or configure your 9P client's factotum accordingly.
+Pass the username as `uname` and the password as `aname`. No `Tauth` handshake
+is performed: Linux v9fs and plan9port never send one, so requiring it would
+reject every standard client. Credentials are checked when the session starts;
+a wrong password yields an `Rattach` followed by an immediately closed session.
+
+Because the password travels in a mount option it is visible in `mount` output
+and in `/proc/mounts` to anyone who can read them. Prefer the Unix socket with
+restrictive permissions, or WebDAV, on multi-user hosts.
 
 #### Quota
 
