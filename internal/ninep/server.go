@@ -5,12 +5,15 @@ package ninep
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
 	"net"
 	"os"
 	"path"
+	"path/filepath"
+	"strings"
 
 	"aqwari.net/net/styx"
 	fsinternal "nssc/internal/fs"
@@ -32,20 +35,63 @@ func NewServer(usersDB *users.UsersDB, fsSrv *fsinternal.UserFSServer) *Server {
 	}
 }
 
-// ListenAndServe starts a 9P listener on addr (e.g. ":564" or
-// "unix:///run/nssc.sock"). It blocks until the server fails.
-func (s *Server) ListenAndServe(addr string) error {
-	// Auth is deliberately nil: Linux v9fs and plan9port never send Tauth,
-	// so requiring it rejected every standard client with "no such fid".
-	// Credentials are validated in Serve9P from uname/aname instead.
-	srv := &styx.Server{
-		Addr:    addr,
-		Handler: s,
+// Listen binds a 9P listener. addr is either a TCP address (":564") or a
+// unix socket ("unix:///run/nssc/9p.sock").
+//
+// The unix form was documented but never worked: styx.Server.ListenAndServe
+// always calls net.Listen("tcp", addr), so the socket path was parsed as a
+// TCP port and the listener failed with "lookup tcp////run/nssc.sock".
+func (s *Server) Listen(addr string) (net.Listener, error) {
+	if path, ok := UnixSocketPath(addr); ok {
+		// Refuse to steal a socket that a live instance is still serving;
+		// only clear the leftover of one that died without cleaning up.
+		if c, err := net.Dial("unix", path); err == nil {
+			c.Close()
+			return nil, fmt.Errorf("9P unix socket %s is already in use", path)
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("remove stale 9P socket: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			return nil, fmt.Errorf("create 9P socket directory: %w", err)
+		}
+		ln, err := net.Listen("unix", path)
+		if err != nil {
+			return nil, err
+		}
+		// Group members (e.g. an operator mounting the share) may connect;
+		// the process umask would otherwise leave the socket 0700.
+		if err := os.Chmod(path, 0o660); err != nil {
+			ln.Close()
+			return nil, fmt.Errorf("chmod 9P socket: %w", err)
+		}
+		return ln, nil
 	}
-	return srv.ListenAndServe()
+	return net.Listen("tcp", addr)
+}
+
+// UnixSocketPath reports the filesystem path of a "unix://" 9P address.
+func UnixSocketPath(addr string) (string, bool) {
+	if p, ok := strings.CutPrefix(addr, "unix://"); ok {
+		return p, true
+	}
+	return "", false
+}
+
+// ListenAndServe binds addr and serves until the listener fails.
+func (s *Server) ListenAndServe(addr string) error {
+	ln, err := s.Listen(addr)
+	if err != nil {
+		return err
+	}
+	return s.Serve(ln)
 }
 
 // Serve starts a 9P server on an existing listener.
+//
+// Auth is deliberately nil: Linux v9fs and plan9port never send Tauth, so
+// requiring it rejected every standard client with "no such fid". Credentials
+// are validated in Serve9P from uname/aname instead.
 func (s *Server) Serve(l net.Listener) error {
 	srv := &styx.Server{
 		Handler: s,

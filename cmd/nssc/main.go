@@ -160,13 +160,19 @@ func runServer(args []string) {
 
 	var sockPath string
 	if *ninepAddr != "" {
-		if p, ok := unixSocketPath(*ninepAddr); ok {
+		srv9p := ninep.NewServer(db, ufss)
+		// Bind before the HTTP server starts: a 9P bind failure must abort
+		// startup rather than leave the service "healthy" with 9P dead.
+		ln, err := srv9p.Listen(*ninepAddr)
+		if err != nil {
+			log.Fatalf("9P listen on %s: %v", *ninepAddr, err)
+		}
+		if p, ok := ninep.UnixSocketPath(*ninepAddr); ok {
 			sockPath = p
 		}
-		srv9p := ninep.NewServer(db, ufss)
 		go func() {
 			log.Printf("9P server listening on %s", *ninepAddr)
-			if err := srv9p.ListenAndServe(*ninepAddr); err != nil && ctx.Err() == nil {
+			if err := srv9p.Serve(ln); err != nil && ctx.Err() == nil {
 				log.Printf("9P server: %v", err)
 			}
 		}()
@@ -202,14 +208,6 @@ func runServer(args []string) {
 		}
 	}
 	log.Printf("shutdown complete")
-}
-
-func unixSocketPath(addr string) (string, bool) {
-	const prefix = "unix://"
-	if strings.HasPrefix(addr, prefix) {
-		return strings.TrimPrefix(addr, prefix), true
-	}
-	return "", false
 }
 
 func addUser(args []string) {
