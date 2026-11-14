@@ -1,4 +1,4 @@
-![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go)
+![Go](https://img.shields.io/badge/Go-1.26.11+-00ADD8?logo=go)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](https://opensource.org/licenses/MIT)
 
 # nssc
@@ -43,7 +43,8 @@ otherwise the cookie is dropped by the browser and login loops.
 
 ### Prerequisites
 
-- Go 1.26+
+- Go 1.26.11+ (pinned in `go.mod`; earlier 1.26.x releases ship a Go standard
+  library with known vulnerabilities — see `govulncheck` in CI)
 - POSIX-compliant OS (Linux/macOS)
 
 ### Build

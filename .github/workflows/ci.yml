@@ -4,6 +4,9 @@ on:
   push:
     branches: [master]
   pull_request:
+  schedule:
+    # the vulnerability DB changes daily; re-scan an unchanged tree weekly
+    - cron: "0 6 * * 1"
 
 permissions:
   contents: read
@@ -38,4 +41,5 @@ jobs:
         run: go test -race ./...
 
       - name: govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        # pinned for reproducibility; the vuln DB itself updates server-side
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...

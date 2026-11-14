@@ -5,7 +5,7 @@ GO = go
 VERSION := $(shell printf '%s-dev' "$$(git describe --tags --always --dirty 2>/dev/null || echo unknown)")
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build nssc clean
+.PHONY: all build nssc clean vuln
 
 all: deps build
 
@@ -32,7 +32,10 @@ test:
 	$(GO) tool cover -func=coverage.out
 	$(GO) tool cover -html=coverage.out -o coverage.html
 
-check: fmt vet test
+vuln:
+	$(GO) run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+check: fmt vet test vuln
 
 clean:
 	$(GO) clean -v
