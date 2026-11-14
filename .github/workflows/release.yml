@@ -1,5 +1,29 @@
 name: release
 
+# Publishes a release for every three-component tag (v1.2.3).
+#
+# This file runs unchanged on github.com and on Forgejo/Gitea. Nothing in it is
+# forge-specific and nothing is branched per forge:
+#
+#   * API base     - ${{ github.api_url }}: https://api.github.com on GitHub,
+#                    https://<host>/api/v1 on Forgejo. Both serve
+#                    /repos/{owner}/{repo}/releases.
+#   * auth         - "Authorization: token ..." is accepted by both.
+#   * asset upload - the upload_url returned by the create-release call (GitHub
+#                    points it at uploads.github.com, Forgejo at its own host),
+#                    with the raw binary as the request body. GitHub documents
+#                    raw binary for this endpoint; Forgejo accepts it too.
+#
+# Deliberately no third-party actions: the Forgejo runner resolves actions from
+# data.forgejo.org, which does not mirror softprops/action-gh-release, and it
+# pre-fetches every action before running a single step, so an unmirrored action
+# fails the job before the build starts. actions/upload-artifact@v4 is also
+# unusable there (@actions/artifact reports GHESNotSupportedError).
+#
+# Re-running this workflow for a tag whose release already exists will fail on
+# asset upload (both forges reject a duplicate filename). Delete the release
+# first if you need to rebuild one.
+
 on:
   push:
     tags:
@@ -13,6 +37,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -21,8 +46,6 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # single job, no upload/download-artifact: @actions/artifact v4 is not
-      # supported by this Forgejo (reports GHESNotSupportedError)
       - name: build
         env:
           CGO_ENABLED: "0"
@@ -39,26 +62,46 @@ jobs:
           ( cd dist && sha256sum nssc-linux-* > SHA256SUMS )
           ls -l dist
 
-      # no third-party action: the runner resolves actions via data.forgejo.org,
-      # which does not mirror softprops/action-gh-release ("remote: Not found"),
-      # and it pre-fetches every action before running any step
-      - name: create release
+      - name: publish
         env:
           TOKEN: ${{ github.token }}
+          API: ${{ github.api_url }}
         run: |
           set -eu
-          api="${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}"
+          base="$API/repos/${{ github.repository }}"
+          tag="$GITHUB_REF_NAME"
           auth="Authorization: token ${TOKEN}"
-          create() {
-            curl -fsS -X POST "$api/releases" -H "$auth" \
-              -H 'Content-Type: application/json' \
-              -d "{\"tag_name\":\"${GITHUB_REF_NAME}\",\"name\":\"${GITHUB_REF_NAME}\",\"body\":\"Release ${GITHUB_REF_NAME}\"}"
-          }
-          resp=$(create) || resp=$(curl -fsS "$api/releases/tags/${GITHUB_REF_NAME}" -H "$auth")
-          rid=$(printf '%s' "$resp" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
-          test -n "$rid"
+
+          payload=$(printf '{"tag_name":"%s","name":"%s","body":"Release %s"}' \
+                    "$tag" "$tag" "$tag")
+
+          code=$(curl -sS -o rel.json -w '%{http_code}' -X POST "$base/releases" \
+                   -H "$auth" -H 'Content-Type: application/json' -d "$payload")
+          case "$code" in
+            2*) resp=$(cat rel.json); echo "created release $tag" ;;
+            409|422)
+              if resp=$(curl -fsS "$base/releases/tags/$tag" -H "$auth" 2>/dev/null); then
+                echo "release $tag already exists, reusing it"
+              else
+                echo "creating release failed: HTTP $code"; cat rel.json; exit 1
+              fi ;;
+            *) echo "creating release failed: HTTP $code"; cat rel.json; exit 1 ;;
+          esac
+
+          # upload_url comes from the API, so the host is never hardcoded. GitHub
+          # appends an RFC 6570 template (.../assets{?name,label}); strip it.
+          up=$(printf '%s' "$resp" | grep -o '"upload_url":"[^"]*"' | head -1 | cut -d'"' -f4)
+          up=${up%%\{*}
+          test -n "$up"
+
           for f in dist/*; do
-            curl -fsS -X POST "$api/releases/${rid}/assets?name=$(basename "$f")" \
-              -H "$auth" -F "attachment=@${f}"
+            name=$(basename "$f")
+            code=$(curl -sS -o up.json -w '%{http_code}' -X POST "$up?name=$name" \
+                     -H "$auth" -H 'Content-Type: application/octet-stream' \
+                     --data-binary "@$f")
+            case "$code" in
+              2*) echo "uploaded $name" ;;
+              *)  echo "uploading $name failed: HTTP $code"; cat up.json; exit 1 ;;
+            esac
           done
-          echo "release ${GITHUB_REF_NAME} id=${rid} published"
+          echo "release $tag published"
