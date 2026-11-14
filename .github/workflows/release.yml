@@ -3,52 +3,46 @@ name: release
 on:
   push:
     tags:
-      - "v*"
+      # three-component semver only: upstream ships 1.0 / 1.1 / v1.2 tags that
+      # must NOT build releases (they point at pre-fix commits)
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
-
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: true
 
+      # single job, no upload/download-artifact: @actions/artifact v4 is not
+      # supported by this Forgejo (reports GHESNotSupportedError)
       - name: build
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
-          out="nssc-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
-          go build -trimpath -ldflags "-s -w -X main.version=${{ github.ref_name }}" -o "$out" ./cmd/nssc
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: nssc-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: nssc-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
+          set -eu
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            GOOS=linux GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+              -o "dist/nssc-linux-$arch" ./cmd/nssc
+          done
+          ./dist/nssc-linux-amd64 version
+          test "$(./dist/nssc-linux-amd64 version)" = "${GITHUB_REF_NAME}"
+          ( cd dist && sha256sum nssc-linux-* > SHA256SUMS )
+          ls -l dist
 
       - name: create release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
-          generate_release_notes: true
+          files: |
+            dist/nssc-linux-amd64
+            dist/nssc-linux-arm64
+            dist/SHA256SUMS
