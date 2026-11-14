@@ -1,0 +1,61 @@
+[Unit]
+Description=nssc file server (web UI, REST, WebDAV, 9P)
+Documentation=https://git.polyserv.xyz/polyserv/nssc
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=nssc
+Group=nssc
+WorkingDirectory=/srv/nssc
+
+# HTTP is bound to loopback on purpose: nssc has no TLS of its own, so it
+# belongs behind a reverse proxy. Put it on 0.0.0.0 only if you really mean
+# to expose plain HTTP (and Basic auth) to the network.
+#
+# The 9P socket lives in RuntimeDirectory, which systemd deletes on stop, so
+# a crashed instance can never leave a stale socket behind. Pass an empty
+# -9p "" to disable 9P entirely.
+ExecStart=/usr/local/bin/nssc run -p 127.0.0.1:8080 -9p unix:///run/nssc/9p.sock /srv/nssc
+
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=20s
+
+RuntimeDirectory=nssc
+RuntimeDirectoryMode=0750
+
+# The app creates files 0600/0700 itself; the umask is a second line of
+# defence for anything it creates through the stdlib.
+UMask=0077
+LimitNOFILE=65536
+
+# --- sandboxing ---
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/srv/nssc
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

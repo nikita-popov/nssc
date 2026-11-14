@@ -154,6 +154,22 @@ nssc run -p :8080 -9p unix:///run/nssc.sock ~/storage/
 
 By default `nssc` picks a random port. Use `-p` to bind to a specific address.
 
+### Running as a systemd service
+
+`packaging/systemd/` ships a hardened unit (`nssc.service`), a `sysusers.d` entry that creates the unprivileged `nssc` account, and a `tmpfiles.d` entry that creates `/srv/nssc`:
+
+```sh
+install -m 0755 nssc /usr/local/bin/nssc
+install -m 0644 packaging/systemd/nssc.sysusers.conf /etc/sysusers.d/nssc.conf
+install -m 0644 packaging/systemd/nssc.tmpfiles.conf /etc/tmpfiles.d/nssc.conf
+install -m 0644 packaging/systemd/nssc.service      /etc/systemd/system/nssc.service
+systemd-sysusers && systemd-tmpfiles --create
+sudo -u nssc /usr/local/bin/nssc adduser /srv/nssc alice 1GiB
+systemctl enable --now nssc
+```
+
+The unit binds HTTP to `127.0.0.1:8080` — nssc has no TLS of its own, so it belongs behind a reverse proxy — and 9P to `/run/nssc/9p.sock`. Run `adduser` as `nssc`, not as root: `db.json` is `0600`, so a root-owned database is unreadable to the service. See `packaging/systemd/README.md` for drop-ins, mounting and the upgrade path.
+
 ## Protocols
 
 ### Public Sharing
