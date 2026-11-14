@@ -140,8 +140,8 @@ func cleanPath(p string) string {
 }
 
 // quotaWriter wraps an io.ReadWriteCloser and charges written bytes to the
-// user quota. If the quota is exceeded the write is rejected and the file
-// is closed.
+// user quota. If the quota is exceeded the write is rejected with EPERM and
+// the file stays open, so the client can still close it cleanly.
 type quotaWriter struct {
 	inner io.ReadWriteCloser
 	ufs   *fsinternal.UserFS
@@ -156,7 +156,6 @@ func (qw *quotaWriter) Close() error               { return qw.inner.Close() }
 
 func (qw *quotaWriter) Write(p []byte) (int, error) {
 	if err := qw.ufs.CheckQuota(int64(len(p))); err != nil {
-		qw.inner.Close()
 		return 0, fs.ErrPermission
 	}
 	written, err := qw.inner.Write(p)

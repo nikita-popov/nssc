@@ -20,7 +20,7 @@ func TestUserFSServer(t *testing.T) {
 		t.Fatalf("Ошибка получения UserFS: %v", err)
 	}
 
-	expectedPath := filepath.Join(root, "testuser")
+	expectedPath := filepath.Join(root, "user", "testuser")
 	if ufs.Root() != expectedPath {
 		t.Errorf("Некорректный корневой путь: %s", ufs.Root())
 	}

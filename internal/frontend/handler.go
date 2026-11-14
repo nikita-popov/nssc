@@ -1,14 +1,14 @@
 package frontend
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"html/template"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	defaultUploadMaxMemory = 100 << 20 // 100 MiB
+	defaultUploadMaxMemory = 8 << 20 // 8 MiB of multipart kept in RAM, rest spills to disk
 	sessionCookieName      = "nssc_session"
 )
 
@@ -37,9 +37,9 @@ type FrontendHandler struct {
 }
 
 // NewHandler creates a FrontendHandler.
-// version is the build-time version string (set via -ldflags "-X main.Version=...").
-// Pass maxMemory > 0 to override the default 100 MiB multipart limit.
-func NewHandler(db *users.UsersDB, rootDir string, fs *fs.UserFSServer, version string, maxMemory int64) *FrontendHandler {
+// version is the build-time version string (set via -ldflags "-X main.version=...").
+// Pass maxMemory > 0 to override the default multipart memory limit.
+func NewHandler(db *users.UsersDB, rootDir string, ufss *fs.UserFSServer, version string, maxMemory int64) *FrontendHandler {
 	if maxMemory <= 0 {
 		maxMemory = defaultUploadMaxMemory
 	}
@@ -50,21 +50,30 @@ func NewHandler(db *users.UsersDB, rootDir string, fs *fs.UserFSServer, version 
 		version:         version,
 		shareMgr:        shareMgr,
 		template:        tplPage,
-		fs:              fs,
+		fs:              ufss,
 		uploadMaxMemory: maxMemory,
 	}
 }
 
+// secureRequest reports whether the session cookie may be marked Secure.
+// Hard-coding Secure: true breaks login behind a plain-HTTP reverse proxy,
+// where the browser silently drops the cookie and the user loops on the
+// login prompt.
+func secureRequest(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
 // GetUserFromCookie looks up the authenticated user from the nssc_session cookie.
-// The JWT "sub" claim carries the username, so only one bcrypt verification is
-// performed regardless of how many users exist in the database.
 func (h *FrontendHandler) GetUserFromCookie(r *http.Request) *users.User {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
 		return nil
 	}
-	// Parse without verification to extract the "sub" claim cheaply.
-	// Full signature verification follows with the user's own key.
+	// Parse without verification to extract the "sub" claim cheaply;
+	// full signature verification follows with the user's own key.
 	unverified, _, err := new(jwt.Parser).ParseUnverified(cookie.Value, jwt.MapClaims{})
 	if err != nil {
 		return nil
@@ -129,7 +138,7 @@ func (h *FrontendHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   86400,
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secureRequest(r),
 		SameSite: http.SameSiteStrictMode,
 	})
 	log.Printf("User %s logged in", username)
@@ -164,7 +173,6 @@ func (h *FrontendHandler) handleAuthorizedRequest(w http.ResponseWriter, r *http
 		return
 	}
 	// Only paths under /user/ are handled by userHandler.
-	// Anything else (/style.css, /favicon.ico, …) is a 404.
 	if !strings.HasPrefix(r.URL.Path, "/user/") && r.URL.Path != "/user" {
 		http.NotFound(w, r)
 		return
@@ -195,10 +203,19 @@ func (h *FrontendHandler) userHandler(w http.ResponseWriter, r *http.Request, us
 			http.Error(w, "Forbidden path", http.StatusForbidden)
 			return
 		}
+		defer f.Close()
 		rs, ok := f.(io.ReadSeeker)
 		if !ok {
 			http.Error(w, "File serving not supported", http.StatusInternalServerError)
 			return
+		}
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		disposition := "attachment"
+		if r.URL.Query().Get("preview") != "" {
+			disposition = "inline"
+		}
+		if cd := mime.FormatMediaType(disposition, map[string]string{"filename": fi.Name()}); cd != "" {
+			w.Header().Set("Content-Disposition", cd)
 		}
 		http.ServeContent(w, r, fi.Name(), fi.ModTime(), rs)
 		return
@@ -224,7 +241,7 @@ func (h *FrontendHandler) userHandler(w http.ResponseWriter, r *http.Request, us
 			size = humanize.IBytes(uint64(info.Size()))
 		}
 		modTime := info.ModTime().Format("2006-01-02T15:04:05+0000")
-		rel := filepath.Join(curPath, f.Name())
+		rel := filepath.ToSlash(filepath.Join(curPath, f.Name()))
 		if info.IsDir() {
 			dirsCount++
 		} else {
@@ -239,26 +256,22 @@ func (h *FrontendHandler) userHandler(w http.ResponseWriter, r *http.Request, us
 		})
 	}
 	parentPath := ""
-	if curPath != "" {
-		parentPath = filepath.Dir(curPath)
-		if curPath == "/" {
+	if curPath != "" && curPath != "/" {
+		parentPath = filepath.ToSlash(filepath.Dir(curPath))
+		if parentPath == "." {
 			parentPath = ""
 		}
 	}
-	searchQuery := ""
 	quotaTotal, quotaUsed, _ := ufs.GetQuota()
-	quotaTotalStr := humanize.IBytes(uint64(quotaTotal))
-	quotaUsedStr := humanize.IBytes(uint64(quotaUsed))
 	data := PageData{
 		User:          user,
 		CurrentPath:   curPath,
 		ParentPath:    parentPath,
 		Files:         fileEntries,
 		QuotaTotal:    uint64(quotaTotal),
-		QuotaTotalStr: quotaTotalStr,
+		QuotaTotalStr: humanize.IBytes(uint64(quotaTotal)),
 		QuotaUsed:     uint64(quotaUsed),
-		QuotaUsedStr:  quotaUsedStr,
-		SearchQuery:   searchQuery,
+		QuotaUsedStr:  humanize.IBytes(uint64(quotaUsed)),
 		FilesCount:    filesCount,
 		DirsCount:     dirsCount,
 		Version:       h.version,
@@ -271,35 +284,29 @@ func (h *FrontendHandler) userHandler(w http.ResponseWriter, r *http.Request, us
 func (h *FrontendHandler) handleUpload(w http.ResponseWriter, r *http.Request, user string, ufs *fs.UserFS) {
 	if err := r.ParseMultipartForm(h.uploadMaxMemory); err != nil {
 		log.Printf("Form parse error: %v", err)
-		http.Error(w, "Form parse error: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "Malformed upload", http.StatusBadRequest)
 		return
 	}
 	curPath := r.FormValue("path")
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		log.Printf("Form file error: %v", err)
-		http.Error(w, "File error: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "Malformed upload", http.StatusBadRequest)
 		return
 	}
 	defer file.Close()
 
-	sz := header.Size
-	var src io.Reader = file
-	if sz < 0 {
-		// Unknown size (streaming upload): buffer to get the real size.
-		buf := &bytes.Buffer{}
-		if _, err := io.Copy(buf, file); err != nil {
-			http.Error(w, "Read error: "+err.Error(), http.StatusInternalServerError)
+	// header.Size is -1 for streaming uploads; WriteFile charges the bytes
+	// that actually arrive, so there is no need to buffer the body in RAM
+	// just to learn its length.
+	dstPath := filepath.Join(curPath, header.Filename)
+	if err := ufs.WriteFile(dstPath, file, header.Size); err != nil {
+		log.Printf("File saving error: %v", err)
+		if strings.Contains(err.Error(), "quota exceeded") {
+			http.Error(w, "Quota exceeded", http.StatusInsufficientStorage)
 			return
 		}
-		sz = int64(buf.Len())
-		src = buf
-	}
-
-	dstPath := filepath.Join(curPath, header.Filename)
-	if err := ufs.WriteFile(dstPath, src, sz); err != nil {
-		log.Printf("File saving error: %v", err)
-		http.Error(w, "Save error: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Save failed", http.StatusInternalServerError)
 		return
 	}
 	log.Printf("Form file %s saved to %s", header.Filename, dstPath)
@@ -315,14 +322,13 @@ func (h *FrontendHandler) handleMkdir(w http.ResponseWriter, r *http.Request, us
 	curPath := r.FormValue("path")
 	dirname := r.FormValue("dirname")
 	if dirname == "" {
-		log.Printf("Malformed form: Directory name required")
 		http.Error(w, "Directory name required", http.StatusBadRequest)
 		return
 	}
 	fullPath := filepath.Join(curPath, dirname)
 	if err := ufs.Mkdir(ctx, fullPath, 0755); err != nil {
 		log.Printf("Mkdir error: %v", err)
-		http.Error(w, "Create error: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Create failed", http.StatusInternalServerError)
 		return
 	}
 	log.Printf("Directory %s created in %s", dirname, fullPath)
@@ -338,12 +344,13 @@ func (h *FrontendHandler) handleDelete(w http.ResponseWriter, r *http.Request, u
 	paths := r.Form["path"]
 	curPath := r.FormValue("dir")
 	for _, p := range paths {
-		path := filepath.Join(curPath, p)
-		if err := ufs.RemoveAll(ctx, path); err != nil {
-			http.Error(w, "Delete error: "+err.Error(), http.StatusInternalServerError)
+		target := filepath.Join(curPath, p)
+		if err := ufs.RemoveAll(ctx, target); err != nil {
+			log.Printf("Delete error for %s: %v", target, err)
+			http.Error(w, "Delete failed", http.StatusInternalServerError)
 			return
 		}
-		log.Printf("File %s removed", path)
+		log.Printf("File %s removed", target)
 	}
 	http.Redirect(w, r, "/user/"+curPath, http.StatusSeeOther)
 }
@@ -355,11 +362,10 @@ func (h *FrontendHandler) handleLogout(w http.ResponseWriter, r *http.Request, u
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secureRequest(r),
 		SameSite: http.SameSiteStrictMode,
 	})
 	log.Printf("User %s logged out", user)
-	// 303 See Other: browser follows redirect with GET regardless of original method.
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -368,22 +374,34 @@ func (h *FrontendHandler) handleSearch(w http.ResponseWriter, r *http.Request, u
 		http.Error(w, "Form parse error", http.StatusBadRequest)
 		return
 	}
-	query := r.FormValue("q")
+	// The template used to submit "query" while the handler read "q", so the
+	// pattern was empty and every file matched. Accept both spellings.
+	query := strings.TrimSpace(r.FormValue("q"))
+	if query == "" {
+		query = strings.TrimSpace(r.FormValue("query"))
+	}
 	if len(query) > 200 {
 		http.Error(w, "Search query too long", http.StatusBadRequest)
 		return
 	}
-	re, err := regexp.Compile(query)
-	if err != nil {
-		http.Error(w, "Invalid search pattern: "+err.Error(), http.StatusBadRequest)
-		return
+
+	results := []fs.FileEntry{}
+	if query != "" {
+		// Treat the input as a literal substring: the box is labelled "Search
+		// term", and a raw user regexp is a free ReDoS/DoS vector.
+		re, err := regexp.Compile("(?i)" + regexp.QuoteMeta(query))
+		if err != nil {
+			http.Error(w, "Invalid search term", http.StatusBadRequest)
+			return
+		}
+		results, _ = ufs.Search(re)
 	}
-	results, _ := ufs.Search(re)
 	quotaTotal, quotaUsed, _ := ufs.GetQuota()
 	data := PageData{
 		User:          user,
 		Files:         results,
 		SearchQuery:   query,
+		FilesCount:    len(results),
 		QuotaTotal:    uint64(quotaTotal),
 		QuotaTotalStr: humanize.IBytes(uint64(quotaTotal)),
 		QuotaUsed:     uint64(quotaUsed),
@@ -395,28 +413,56 @@ func (h *FrontendHandler) handleSearch(w http.ResponseWriter, r *http.Request, u
 	}
 }
 
+// shareRelPath accepts the current "path" field and the legacy "name" field
+// (which posted "/{user}/{rel}") and returns a path relative to the user root.
+func (h *FrontendHandler) shareRelPath(ctx context.Context, ufs *fs.UserFS, user, raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", os.ErrNotExist
+	}
+	trimmed := strings.TrimPrefix(raw, "/")
+	candidates := []string{trimmed}
+	if strings.HasPrefix(trimmed, user+"/") {
+		candidates = append(candidates, strings.TrimPrefix(trimmed, user+"/"))
+	}
+	candidates = append(candidates, raw)
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		if _, err := ufs.Stat(ctx, c); err == nil {
+			return c, nil
+		}
+	}
+	return "", os.ErrNotExist
+}
+
 func (h *FrontendHandler) handleShare(w http.ResponseWriter, r *http.Request, user string, ufs *fs.UserFS) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Form parse error", http.StatusBadRequest)
 		return
 	}
-	relPath := r.FormValue("path")
-	// Validate that the path exists inside the user FS (resolvePath guards traversal).
-	if _, err := ufs.Stat(context.Background(), relPath); err != nil {
+	ctx := context.Background()
+	raw := r.FormValue("path")
+	if raw == "" {
+		raw = r.FormValue("name")
+	}
+	relPath, err := h.shareRelPath(ctx, ufs, user, raw)
+	if err != nil {
 		http.Error(w, "File not found", http.StatusNotFound)
 		return
 	}
-	userRoot := filepath.Join(h.rootDir, "user", user)
-	link, err := h.shareMgr.CreateShare(userRoot, relPath)
+	// Share from the filesystem root that actually backs this user; deriving
+	// <root>/user/<name> here broke every instance whose data lived elsewhere.
+	link, err := h.shareMgr.CreateShare(ufs.Root(), relPath)
 	if err != nil {
 		log.Printf("Share error: %v", err)
 		http.Error(w, "Sharing failed", http.StatusInternalServerError)
 		return
 	}
-	curPath := filepath.Dir(relPath)
+	curPath := filepath.ToSlash(filepath.Dir(relPath))
+	if curPath == "." {
+		curPath = ""
+	}
 	http.Redirect(w, r, "/user/"+curPath+"?shared="+link, http.StatusSeeOther)
 }
-
-// suppress unused import errors when errors/template are only used in other files
-var _ = errors.New
-var _ = template.HTMLEscapeString

@@ -46,7 +46,7 @@ var tplPage = template.Must(template.New("index").Parse(`
       <td>
         {{ if not .IsDir }}
           <form method="post" action="/share">
-              <input type="hidden" name="name" value="/{{ $.User }}{{ .RelPath }}">
+              <input type="hidden" name="path" value="{{ .RelPath }}">
               <input type="submit" value="Share">
           </form>
         {{ end }}
@@ -60,7 +60,7 @@ var tplPage = template.Must(template.New("index").Parse(`
 
 <div class="userform">
 <form action="/search" method="post">
-  <input type="text" name="query" placeholder="Search term" value="{{ .SearchQuery }}">
+  <input type="text" name="q" placeholder="Search term" value="{{ .SearchQuery }}">
   <input type="submit" value="Search">
 </form>
 </div>

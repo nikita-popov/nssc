@@ -3,6 +3,7 @@ package webdav
 import (
 	"net/http"
 	"strings"
+	"sync"
 
 	"golang.org/x/net/webdav"
 
@@ -15,6 +16,9 @@ type WebDAVHandler struct {
 	db      *users.UsersDB
 	rootDir string
 	fs      *fs.UserFSServer
+
+	mu    sync.Mutex
+	locks map[string]webdav.LockSystem
 }
 
 func NewHandler(db *users.UsersDB, rootDir string, ufs *fs.UserFSServer) http.Handler {
@@ -22,7 +26,22 @@ func NewHandler(db *users.UsersDB, rootDir string, ufs *fs.UserFSServer) http.Ha
 		db:      db,
 		rootDir: rootDir,
 		fs:      ufs,
+		locks:   make(map[string]webdav.LockSystem),
 	}
+}
+
+// lockSystem returns the per-user lock system. It is kept across requests:
+// a fresh MemLS per request (the previous behaviour) meant locks were never
+// visible to the request that had to honour them.
+func (h *WebDAVHandler) lockSystem(user string) webdav.LockSystem {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ls, ok := h.locks[user]
+	if !ok {
+		ls = webdav.NewMemLS()
+		h.locks[user] = ls
+	}
+	return ls
 }
 
 func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -47,29 +66,26 @@ func (h *WebDAVHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// LockSystem is created per ServeHTTP call to prevent cross-user lock leakage.
 	handler := &webdav.Handler{
 		Prefix:     "/webdav/" + username,
 		FileSystem: ufs,
-		LockSystem: webdav.NewMemLS(),
+		LockSystem: h.lockSystem(username),
 	}
 
 	h.quotaMiddleware(handler, ufs).ServeHTTP(w, r)
 }
 
-// quotaMiddleware rejects write operations that would exceed the user's quota.
-// ufs is passed directly to avoid a redundant GetUserFS lookup.
+// quotaMiddleware rejects writes that are known up front to exceed the quota.
+// Uploads of unknown length (Transfer-Encoding: chunked, ContentLength == -1)
+// are let through: UserFS.quotaFile enforces the quota per Write call, which
+// is the only correct way to police a stream whose size is not declared.
 func (h *WebDAVHandler) quotaMiddleware(next http.Handler, ufs *fs.UserFS) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case "PUT", "MKCOL", "COPY", "MOVE":
 			total, used, _ := ufs.GetQuota()
-			if total > 0 {
-				var needed int64
-				if r.Method == "PUT" {
-					needed = r.ContentLength
-				}
-				if uint64(used+needed) > uint64(total) {
+			if total > 0 && r.Method == "PUT" && r.ContentLength > 0 {
+				if r.ContentLength > total-used {
 					http.Error(w, "Quota exceeded", http.StatusInsufficientStorage)
 					return
 				}

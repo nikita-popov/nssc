@@ -1,4 +1,4 @@
-![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)
+![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](https://opensource.org/licenses/MIT)
 
 # nssc
@@ -35,11 +35,15 @@ Heavily inspired by the [slcl](https://codeberg.org/xavidcr/slcl) project.
 
 `nssc` does not implement TLS directly. Use a reverse proxy such as `nginx` or `caddy`.
 
+The session cookie is marked `Secure` only when the request arrived over TLS or
+carried `X-Forwarded-Proto: https`, so make sure the proxy sets that header —
+otherwise the cookie is dropped by the browser and login loops.
+
 ## Getting Started
 
 ### Prerequisites
 
-- Go 1.24+
+- Go 1.26+
 - POSIX-compliant OS (Linux/macOS)
 
 ### Build
@@ -69,7 +73,11 @@ make check
 
 - `db.json` — credentials database (created with mode 0600 if absent).
 - `public` — read-only files accessible without authentication, implemented as symlinks.
-- `user` — per-user directories.
+- `user` — per-user directories (`user/<username>`).
+
+Older builds stored user data directly in `<root>/<username>`. That layout is
+still **read** when `user/<username>` does not exist, so upgrading does not
+orphan existing files, but new directories are always created under `user/`.
 
 `nssc` creates the root directory and all subdirectories if they do not exist.
 
@@ -106,6 +114,12 @@ Full example:
 - `password` — bcrypt hash of the password.
 - `key` — random key used to sign JWT cookies for the web UI.
 - `quota` — storage quota (e.g. `512MiB`, `10GiB`).
+
+### Version
+
+```sh
+nssc version
+```
 
 ### Adding users
 
@@ -145,9 +159,8 @@ http://{domain}/public/{uuidv7}
 
 Browser-based file manager (no JavaScript required).
 
-`style.css` is created in the storage root at startup if it does not already exist — customise freely.
-
-If `favicon.ico` exists in the storage root it will be served automatically.
+The stylesheet is embedded in the binary and served from `/style.css`; it is not
+written to the storage root.
 
 ### REST API
 
@@ -175,7 +188,9 @@ curl -X POST -u user:pass http://localhost:8080/api/user/documents/
 
 # Generate share link
 curl -X POST -u user:pass http://localhost:8080/api/user/documents/file.txt/share
-# Response: {"link":"/public/018f1d24-7b7f-7f3d-ae2d-c1d079e3c992"}
+# Response: {"link":"/public/018f1d24-7b7f-7f3d-ae2d-c1d079e3c992",
+#            "share_url":"/public/018f1d24-7b7f-7f3d-ae2d-c1d079e3c992"}
+# `share_url` is emitted for compatibility with earlier releases.
 ```
 
 ### WebDAV

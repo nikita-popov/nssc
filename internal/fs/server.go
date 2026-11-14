@@ -11,6 +11,24 @@ import (
 	"nssc/internal/users"
 )
 
+// UserRoot returns the directory that backs a user's files.
+//
+// The canonical layout is <root>/user/<name>, which is what README documents
+// and what `nssc adduser` creates. Instances created by older builds stored
+// data directly in <root>/<name>; those are still found via the legacy
+// fallback so an upgrade does not orphan existing files. New directories are
+// always created at the canonical path.
+func UserRoot(root, name string) string {
+	canonical := filepath.Join(root, "user", name)
+	if _, err := os.Stat(canonical); err != nil {
+		legacy := filepath.Join(root, name)
+		if info, lerr := os.Stat(legacy); lerr == nil && info.IsDir() {
+			return legacy
+		}
+	}
+	return canonical
+}
+
 // UserFSServer holds per-user UserFS instances.
 type UserFSServer struct {
 	root        string
@@ -25,14 +43,17 @@ func NewUserFSServer(root string, commonQuota *Quota, userList []users.User) (*U
 	if err := os.MkdirAll(root, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create root directory: %w", err)
 	}
+	if err := os.MkdirAll(filepath.Join(root, "user"), 0755); err != nil {
+		return nil, fmt.Errorf("failed to create user directory: %w", err)
+	}
 	server := &UserFSServer{
 		root:        root,
 		commonQuota: commonQuota,
 		users:       make(map[string]*UserFS),
 	}
 	for _, user := range userList {
-		userRoot := filepath.Join(root, user.Name)
-		if err := os.MkdirAll(userRoot, 0755); err != nil {
+		userRoot := UserRoot(root, user.Name)
+		if err := os.MkdirAll(userRoot, 0700); err != nil {
 			return nil, fmt.Errorf("failed to create user directory for %s: %w", user.Name, err)
 		}
 		quota, err := humanize.ParseBytes(user.Quota)
