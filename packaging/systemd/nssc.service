@@ -52,6 +52,9 @@ RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
+# Verified against this binary: the Go runtime does not need W+X mappings.
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
