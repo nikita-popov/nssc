@@ -288,6 +288,7 @@ Nothing is branched per forge; every forge-specific value is derived at run time
 | API base | `${{ github.api_url }}` | `https://api.github.com` | `https://<host>/api/v1` |
 | Auth | `Authorization: token ...` | accepted | accepted |
 | Asset URL | `upload_url` from the create-release response | `uploads.github.com` | `<host>/api/v1/...` |
+| Response JSON | `upload_url` matched whitespace-tolerantly | pretty-printed (`"upload_url": "..."`) | compact (`"upload_url":"..."`) |
 | Asset body | raw binary (`--data-binary`) | documented | accepted (verified 16.0.1) |
 
 No third-party actions are used, deliberately: the Forgejo runner pre-fetches

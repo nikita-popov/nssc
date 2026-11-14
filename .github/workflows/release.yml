@@ -88,11 +88,20 @@ jobs:
             *) echo "creating release failed: HTTP $code"; cat rel.json; exit 1 ;;
           esac
 
-          # upload_url comes from the API, so the host is never hardcoded. GitHub
-          # appends an RFC 6570 template (.../assets{?name,label}); strip it.
-          up=$(printf '%s' "$resp" | grep -o '"upload_url":"[^"]*"' | head -1 | cut -d'"' -f4)
+          # upload_url comes from the API, so the host is never hardcoded.
+          # GitHub pretty-prints its JSON ("upload_url": "https://...") while
+          # Forgejo emits it compact ("upload_url":"https://..."), so allow any
+          # whitespace around the colon. GitHub also appends an RFC 6570
+          # template (.../assets{?name,label}); strip it.
+          up=$(printf '%s' "$resp" \
+                 | grep -oE '"upload_url"[[:space:]]*:[[:space:]]*"[^"]*"' \
+                 | head -1 | sed -E 's/^.*"([^"]*)"$/\1/')
           up=${up%%\{*}
-          test -n "$up"
+          if [ -z "$up" ]; then
+            echo "could not find upload_url in the API response:" >&2
+            printf '%s\n' "$resp" >&2
+            exit 1
+          fi
 
           for f in dist/*; do
             name=$(basename "$f")
