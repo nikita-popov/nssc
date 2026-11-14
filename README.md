@@ -266,6 +266,38 @@ restrictive permissions, or WebDAV, on multi-user hosts.
 
 Write operations (file creation, open-for-write) are subject to the same per-user quota as the REST API and WebDAV interfaces. Writes that would exceed the quota are rejected with `EPERM`.
 
+## Releasing
+
+`.github/workflows/release.yml` builds `linux/amd64` and `linux/arm64`, checks
+that `nssc version` matches the tag, and publishes both binaries plus
+`SHA256SUMS` as release assets. Push a three-component tag:
+
+```sh
+git tag -a v1.3.0 -m 'v1.3.0'
+git push origin v1.3.0
+```
+
+Two-component (`v1.2`) and bare (`1.0`, `1.1`) tags are ignored on purpose: they
+point at pre-fix upstream commits.
+
+The workflow is forge-agnostic and runs unchanged on github.com and on Forgejo.
+Nothing is branched per forge; every forge-specific value is derived at run time:
+
+| What | Source | GitHub | Forgejo |
+|---|---|---|---|
+| API base | `${{ github.api_url }}` | `https://api.github.com` | `https://<host>/api/v1` |
+| Auth | `Authorization: token ...` | accepted | accepted |
+| Asset URL | `upload_url` from the create-release response | `uploads.github.com` | `<host>/api/v1/...` |
+| Asset body | raw binary (`--data-binary`) | documented | accepted (verified 16.0.1) |
+
+No third-party actions are used, deliberately: the Forgejo runner pre-fetches
+every action before running a single step and mirrors only a subset, so an
+unmirrored action fails the job before the build starts. `ci.yml` follows the same
+rule and needs only `actions/checkout` and `actions/setup-go`.
+
+Re-running a release for a tag that already has one fails on asset upload: both
+forges reject a duplicate filename. Delete the release first.
+
 ## Bugs
 
 Probably.
