@@ -76,9 +76,17 @@ make check
 - `public` — read-only files accessible without authentication, implemented as symlinks.
 - `user` — per-user directories (`user/<username>`).
 
-Older builds stored user data directly in `<root>/<username>`. That layout is
-still **read** when `user/<username>` does not exist, so upgrading does not
-orphan existing files, but new directories are always created under `user/`.
+Older builds stored user data directly in `<root>/<username>`. On startup
+`nssc` migrates such a home to `user/<username>` when the canonical directory
+holds no data yet, so an upgrade does not orphan existing files. If both
+locations hold data the migration is skipped and a warning naming both paths is
+logged: the canonical copy is served, the legacy copy is left on disk and is
+not visible through `nssc`.
+
+The migration is a rename and therefore one-way. A downgrade to a pre-fix build
+would look at `<root>/<username>`, find nothing and create an empty directory.
+Back up the storage root before upgrading, or move the tree back with
+`mv user/<username> <username>` before running an older binary.
 
 `nssc` creates the root directory and all subdirectories if they do not exist.
 
@@ -129,7 +137,7 @@ nssc adduser ~/storage/ alice 10GiB
 nssc adduser ~/storage/ bob 512MiB
 ```
 
-You will be prompted to enter and confirm the password interactively. `adduser` appends the user to `db.json` and creates `user/<username>/`.
+You will be prompted to enter and confirm the password interactively. `adduser` appends the user to `db.json` and creates `user/<username>/`. Names that would collide with a shared entry under the storage root (`user`, `public`, `db.json`) are rejected. If `db.json` cannot be parsed, `adduser` refuses to run instead of overwriting it.
 
 ### Running
 

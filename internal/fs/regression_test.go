@@ -119,16 +119,79 @@ func TestOpenFileTruncReleasesQuota(t *testing.T) {
 
 func TestLegacyLayoutFallback(t *testing.T) {
 	root := t.TempDir()
+
+	// A legacy home with real content is still found.
 	legacy := filepath.Join(root, "alice")
 	if err := os.MkdirAll(legacy, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "f.txt"), []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if got := fs.UserRoot(root, "alice"); got != legacy {
 		t.Errorf("UserRoot = %q, want legacy %q", got, legacy)
 	}
 
+	// An empty canonical directory left behind by the old adduser must not
+	// hide the data that actually sits at the legacy path.
+	canonicalAlice := filepath.Join(root, "user", "alice")
+	if err := os.MkdirAll(canonicalAlice, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if got := fs.UserRoot(root, "alice"); got != legacy {
+		t.Errorf("UserRoot with empty canonical = %q, want legacy %q", got, legacy)
+	}
+
+	// Nothing legacy: canonical wins.
 	canonical := filepath.Join(root, "user", "bob")
 	if got := fs.UserRoot(root, "bob"); got != canonical {
 		t.Errorf("UserRoot = %q, want canonical %q", got, canonical)
+	}
+
+	// Reserved names must never resolve to a shared directory.
+	public := filepath.Join(root, "public")
+	if err := os.MkdirAll(public, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(public, "link"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got := fs.UserRoot(root, "public"); got == public {
+		t.Errorf("UserRoot for reserved name returned shared directory %q", got)
+	}
+}
+
+func TestMigrateLegacyRoot(t *testing.T) {
+	root := t.TempDir()
+	legacy := filepath.Join(root, "alice")
+	if err := os.MkdirAll(legacy, 0755); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("payload")
+	if err := os.WriteFile(filepath.Join(legacy, "f.txt"), payload, 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Empty canonical shell, exactly what the old adduser created.
+	canonical := filepath.Join(root, "user", "alice")
+	if err := os.MkdirAll(canonical, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	server, err := fs.NewUserFSServer(root, nil, []users.User{{Name: "alice", Quota: "1GiB"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(canonical, "f.txt")); err != nil {
+		t.Fatalf("file not migrated to canonical path: %v", err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Errorf("legacy directory still present: %v", err)
+	}
+	ufs, err := server.GetUserFS("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, used, _ := ufs.GetQuota(); used != int64(len(payload)) {
+		t.Errorf("used = %d after migration, want %d", used, len(payload))
 	}
 }
