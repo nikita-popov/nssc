@@ -39,10 +39,26 @@ jobs:
           ( cd dist && sha256sum nssc-linux-* > SHA256SUMS )
           ls -l dist
 
+      # no third-party action: the runner resolves actions via data.forgejo.org,
+      # which does not mirror softprops/action-gh-release ("remote: Not found"),
+      # and it pre-fetches every action before running any step
       - name: create release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/nssc-linux-amd64
-            dist/nssc-linux-arm64
-            dist/SHA256SUMS
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          api="${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}"
+          auth="Authorization: token ${TOKEN}"
+          create() {
+            curl -fsS -X POST "$api/releases" -H "$auth" \
+              -H 'Content-Type: application/json' \
+              -d "{\"tag_name\":\"${GITHUB_REF_NAME}\",\"name\":\"${GITHUB_REF_NAME}\",\"body\":\"Release ${GITHUB_REF_NAME}\"}"
+          }
+          resp=$(create) || resp=$(curl -fsS "$api/releases/tags/${GITHUB_REF_NAME}" -H "$auth")
+          rid=$(printf '%s' "$resp" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+          test -n "$rid"
+          for f in dist/*; do
+            curl -fsS -X POST "$api/releases/${rid}/assets?name=$(basename "$f")" \
+              -H "$auth" -F "attachment=@${f}"
+          done
+          echo "release ${GITHUB_REF_NAME} id=${rid} published"
